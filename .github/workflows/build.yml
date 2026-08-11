@@ -1,4 +1,4 @@
-name: Build KernelSU for Zenfone 5 (X00QD)
+name: Build KernelSU Boot Image for Zenfone 5 (X00QD)
 
 on:
   workflow_dispatch:
@@ -11,26 +11,29 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Cài đặt công cụ biên dịch
+      - name: Cài đặt công cụ biên dịch & Magiskboot
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          # Tải magiskboot chính chủ
+          wget https://github.com/mzying2001/magiskboot-linux-x86_64/raw/main/magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
 
       - name: Clone Nguồn Kernel X00QD (Nhánh Stable lineage-18.1)
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Match Exact Signature
+      - name: Tích hợp KernelSU Next & Fix Signature
         run: |
           cd kernel
-          # Tích hợp KernelSU Next
           git clone https://github.com/KernelSU-Next/KernelSU-Next KSU --depth=1
           cp -r KSU/kernel drivers/kernelsu
           rm -rf KSU
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Forward declare đúng struct để định nghĩa hàm trùng khớp 100% với extern dòng 51
+          # Struct fix
           echo -e "\nstruct mdss_dsi_ctrl_pdata;\nstruct dsi_panel_cmds;\nvoid mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
@@ -46,65 +49,39 @@ jobs:
           make O=out sdm660_defconfig
           make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
-      - name: Cấu hình AnyKernel3 Chuẩn X00QD
+      - name: Unpack & Repack boot.img gốc với KernelSU mới
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
-          rm -rf AnyKernel3/.git AnyKernel3/README.md
-          
-          # Copy file kernel image vào AnyKernel3
-          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
-            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
-          elif [ -f kernel/out/arch/arm64/boot/Image ]; then
-            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          # Kiểm tra file zip hoặc img
+          if [ -f boot.zip ]; then
+            unzip boot.zip
           fi
 
-          # Tạo file anykernel.sh tự động quét các đường dẫn boot thực tế
-          cat << 'EOF' > AnyKernel3/anykernel.sh
-          # AnyKernel3 Setup
-          global.banner=boot;
-          properties() { '
-          kernel.string=KernelSU-Next for Zenfone 5 (X00QD)
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuntil=0
-          device.name1=X00QD
-          device.name2=x00qd
-          device.name3=ASUS_X00QD
-          supported.versions=
-          supported.patchlevels=
-          '; }
+          if [ ! -f boot.img ]; then
+            echo "LỖI: Không tìm thấy boot.img hoặc boot.zip trong repository!"
+            exit 1
+          fi
 
-          # Dò tìm đúng đường dẫn block boot trong Recovery
-          block=auto;
-          for p in /dev/block/bootdevice/by-name/boot /dev/block/platform/soc/c0c4000.sdhci/by-name/boot /dev/block/platform/soc/7824900.sdhci/by-name/boot /dev/block/by-name/boot; do
-            if [ -e "$p" ] || [ -L "$p" ]; then
-              block="$p";
-              break;
-            fi
-          done
+          mkdir workdir
+          cp boot.img workdir/
+          cd workdir
 
-          is_slot_device=0;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
+          # Unpack boot.img gốc
+          magiskboot unpack boot.img
 
-          # Import functions
-          . tools/ak3-core.sh;
+          # Thay thế kernel bằng kernel vừa biên dịch
+          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
+          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp ../kernel/out/arch/arm64/boot/Image.gz kernel
+          elif [ -f ../kernel/out/arch/arm64/boot/Image ]; then
+            cp ../kernel/out/arch/arm64/boot/Image kernel
+          fi
 
-          # Install boot image
-          split_boot;
-          flash_boot;
-          EOF
+          # Repack lại thành file boot_ksu.img hoàn chỉnh
+          magiskboot repack boot.img ../boot_ksu.img
 
-          # Nén trực tiếp nội dung thành file ZIP
-          cd AnyKernel3
-          zip -r9 ../KernelSU-X00QD-Flashable.zip *
-
-      - name: Tải file Zip Kernel về
+      - name: Tải file boot_ksu.img về
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-X00QD-Flashable
-          path: KernelSU-X00QD-Flashable.zip
+          name: boot_ksu_X00QD
+          path: boot_ksu.img
