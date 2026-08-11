@@ -46,9 +46,12 @@ jobs:
           make O=out sdm660_defconfig
           make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
-      - name: Đóng gói AnyKernel3
+      - name: Đóng gói AnyKernel3 Cấu Trúc Chuẩn
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
+          rm -rf AnyKernel3/.git AnyKernel3/README.md
+          
+          # Copy file kernel image vào thư mục AnyKernel3
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
@@ -56,11 +59,18 @@ jobs:
           elif [ -f kernel/out/arch/arm64/boot/Image ]; then
             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
+
+          # Tinh chỉnh anykernel.sh cho X00QD (sdm660)
           cd AnyKernel3
-          zip -r9 ../KernelSU-X00QD-Zip.zip * -x .git\* README.md *placeholder
+          sed -i 's/device.name1=.*/device.name1=X00QD/g' anykernel.sh
+          sed -i 's/device.name2=.*/device.name2=x00qd/g' anykernel.sh
+          sed -i 's/device.name3=.*/device.name3=ASUS_X00QD/g' anykernel.sh
+          
+          # Đóng gói zip đúng chuẩn Recovery
+          zip -r9 ../KernelSU-X00QD-Flashable.zip *
 
       - name: Tải file Zip Kernel về
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-X00QD-Zip
-          path: KernelSU-X00QD-Zip.zip
+          name: KernelSU-X00QD-Flashable
+          path: KernelSU-X00QD-Flashable.zip
