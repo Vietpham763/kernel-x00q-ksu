@@ -23,7 +23,7 @@ jobs:
       - name: Tích hợp KernelSU
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tkeyrus/KernelSU/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/tkeyrus/KernelSU/main/kernel/setup.sh" | bash -
 
       - name: Tải Toolchain Clang
         run: |
