@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Fix Triệt Để Lỗi LiveDisplay
+      - name: Tích hợp KernelSU Next & Tắt LiveDisplay Lỗi Tận Gốc
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -30,8 +30,9 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Bỏ hẳn file LiveDisplay bị thiếu hàm khỏi Makefile
-          sed -i '/mdss_livedisplay/d' drivers/video/fbdev/msm/Makefile || true
+          # Tắt hẳn LiveDisplay từ defconfig & Kconfig để dùng stub rỗng chuẩn
+          sed -i 's/CONFIG_FB_MSM_MDSS_LIVEDISPLAY=y/# CONFIG_FB_MSM_MDSS_LIVEDISPLAY is not set/g' arch/arm64/configs/sdm660_defconfig
+          sed -i 's/default y/default n/g' drivers/video/fbdev/msm/Kconfig
 
       - name: Tải Toolchain Proton Clang
         run: |
