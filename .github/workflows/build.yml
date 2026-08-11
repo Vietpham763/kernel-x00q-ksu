@@ -20,10 +20,12 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next
+      - name: Tích hợp KernelSU Next (Đúng vị trí thư mục)
         run: |
           cd kernel
-          git submodule add -f https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
+          git clone https://github.com/KernelSU-Next/KernelSU-Next KSU --depth=1
+          cp -r KSU/kernel drivers/kernelsu
+          rm -rf KSU
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
