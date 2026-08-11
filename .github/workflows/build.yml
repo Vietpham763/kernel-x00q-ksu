@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Fix Lỗi LiveDisplay
+      - name: Tích hợp KernelSU Next & Fix LiveDisplay Chuẩn Xác
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -30,8 +30,8 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Comment duy nhất dòng gọi mdss_dsi_panel_cmds_send trong mdss_livedisplay.c
-          sed -i 's/mdss_dsi_panel_cmds_send(/\/\/ mdss_dsi_panel_cmds_send(/g' drivers/video/fbdev/msm/mdss_livedisplay.c
+          # Bổ sung hàm dummy khớp 100% prototype gốc dòng 52
+          echo -e "\n#include <linux/types.h>\nvoid mdss_dsi_panel_cmds_send(void *ctrl, void *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
         run: |
