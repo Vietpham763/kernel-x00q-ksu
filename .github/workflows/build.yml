@@ -14,11 +14,11 @@ jobs:
       - name: Cài đặt công cụ biên dịch
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
 
-      - name: Clone Nguồn Kernel X00QD (Snapdragon 636)
+      - name: Clone Nguồn Kernel X00QD (Nhánh Stable lineage-18.1)
         run: |
-          git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
+          git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
       - name: Tích hợp KernelSU Next
         run: |
@@ -39,16 +39,8 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          # Tự động tìm defconfig chuẩn cho SDM660 / Asus X00Q
-          if [ -f arch/arm64/configs/sdm660_defconfig ]; then
-            DEFCONFIG=sdm660_defconfig
-          elif [ -f arch/arm64/configs/ASUS_X00Q_defconfig ]; then
-            DEFCONFIG=ASUS_X00Q_defconfig
-          else
-            DEFCONFIG=$(ls arch/arm64/configs/*defconfig | head -n 1 | xargs basename)
-          fi
-          make O=out $DEFCONFIG
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          make O=out sdm660_defconfig
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
       - name: Đóng gói AnyKernel3
         run: |
