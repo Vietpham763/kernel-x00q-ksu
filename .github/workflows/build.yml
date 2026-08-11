@@ -13,8 +13,8 @@ jobs:
 
       - name: Cài đặt môi trường build
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools clang llvm aarch64-linux-gnu-gcc
+          sudo apt-get update || true
+          sudo apt-get install -y --fix-missing build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools clang llvm aarch64-linux-gnu-gcc
 
       - name: Clone Nguồn Kernel crDroid X00Q
         run: |
