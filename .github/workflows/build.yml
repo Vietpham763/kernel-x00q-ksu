@@ -20,13 +20,10 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next / KernelSU
-        run: |
-          cd kernel
-          export GIT_TERMINAL_PROMPT=0
-          git clone https://github.com/rifs33/KernelSU-Next drivers/kernelsu --depth=1 || git clone https://github.com/rsuntk/KernelSU drivers/kernelsu --depth=1
-          echo "obj-y += kernelsu/" >> drivers/Makefile
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+      - name: Tích hợp KernelSU-Next Tự Động
+        uses: rifs33/KernelSU-Next@main
+        with:
+          kernel_dir: kernel
 
       - name: Tải Toolchain Proton Clang
         run: |
