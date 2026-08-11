@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Fix LiveDisplay Chuẩn
+      - name: Tích hợp KernelSU Next & Bổ Sung Hàm DSI Missing
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -30,13 +30,8 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Bỏ file mdss_livedisplay.o khỏi build
-          sed -i '/mdss_livedisplay.o/d' drivers/video/fbdev/msm/Makefile
-          
-          # Stub trực tiếp các hàm gọi LiveDisplay trong file C để không bị lỗi Linker
-          echo 'void mdss_livedisplay_update(void *p) {}' >> drivers/video/fbdev/msm/mdss_dsi.c
-          echo 'void mdss_livedisplay_parse_dt(void *p) {}' >> drivers/video/fbdev/msm/mdss_dsi_panel.c
-          echo 'void mdss_livedisplay_create_sysfs(void *p) {}' >> drivers/video/fbdev/msm/mdss_fb.c
+          # Bổ sung đúng signature hàm mdss_dsi_panel_cmds_send vào mdss_livedisplay.c
+          echo -e "\n#include <linux/types.h>\nvoid mdss_dsi_panel_cmds_send(void *ctrl, int cmd_cnt, void *cmds, bool commit) {}\nEXPORTS_SYMBOL_GPL(mdss_dsi_panel_cmds_send);" >> drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
         run: |
