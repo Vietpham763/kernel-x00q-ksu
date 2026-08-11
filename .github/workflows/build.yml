@@ -43,17 +43,16 @@ jobs:
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
 
-      - name: Biên dịch Kernel (Target Image.gz-dtb)
+      - name: Biên dịch Kernel cho X00QD
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out sdm660_defconfig
-          # Biên dịch chính xác ra file nén Image.gz-dtb
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz-dtb || make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
-      - name: Unpack & Repack boot.img Chuẩn 32MB
+      - name: Unpack & Repack boot.img Chuẩn Kích Thước 32MB
         run: |
           if [ -f boot.zip ]; then
             unzip -o boot.zip
@@ -74,17 +73,24 @@ jobs:
           # Unpack boot.img gốc bằng magiskboot
           magiskboot unpack boot.img
 
-          # Đảm bảo kernel đưa vào luôn là dạng nén gzip
-          if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Dùng Image.gz-dtb vừa compile"
-            cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
-          elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
-            echo "Dùng Image.gz vừa compile"
-            cp ../kernel/out/arch/arm64/boot/Image.gz kernel
-          elif [ -f ../kernel/out/arch/arm64/boot/Image ]; then
-            echo "Thấy Image thô, tiến hành nén gzip -9"
-            gzip -9 -c ../kernel/out/arch/arm64/boot/Image > kernel
+          # Xử lý nén kernel bắt buộc dạng gzip -9 để giảm kích thước từ 50MB xuống 12MB
+          KOUT="../kernel/out/arch/arm64/boot"
+          if [ -f "$KOUT/Image.gz-dtb" ]; then
+            echo "Tìm thấy Image.gz-dtb sẵn có"
+            cp "$KOUT/Image.gz-dtb" kernel
+          elif [ -f "$KOUT/Image.gz" ]; then
+            echo "Tìm thấy Image.gz sẵn có"
+            cp "$KOUT/Image.gz" kernel
+          elif [ -f "$KOUT/Image" ]; then
+            echo "Tìm thấy Image thô (50MB), tiến hành ép nén gzip -9..."
+            gzip -9 -n -c "$KOUT/Image" > kernel
+          else
+            echo "Không tìm thấy file kernel đầu ra!"
+            exit 1
           fi
+
+          K_SIZE=$(stat -c%s "kernel")
+          echo "Kích thước kernel sau khi chuẩn bị nạp: $K_SIZE bytes"
 
           # Repack lại boot image
           magiskboot repack boot.img new-boot.img
@@ -97,7 +103,7 @@ jobs:
             exit 1
           fi
 
-          # Padding chính xác bằng dd khớp 100% từng byte dung lượng 32MB phân vùng boot
+          # Padding chính xác bằng dd khớp 100% từng byte dung lượng gốc 32MB
           cp new-boot.img ../boot_ksu.img
           PAD_BYTES=$((ORIG_SIZE - NEW_SIZE))
           if [ $PAD_BYTES -gt 0 ]; then
