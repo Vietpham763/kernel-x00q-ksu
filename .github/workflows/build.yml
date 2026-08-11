@@ -5,22 +5,23 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Cài đặt môi trường build
+      - name: Cài đặt công cụ biên dịch
         run: |
-          sudo apt-get update || true
-          sudo apt-get install -y --fix-missing build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools clang llvm aarch64-linux-gnu-gcc
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools \
+            clang llvm aarch64-linux-gnu-gcc
 
       - name: Clone Nguồn Kernel crDroid X00Q
         run: |
           git clone https://github.com/crDroidMod/android_kernel_asus_X00Q -b 13.0 kernel
-          
-      - name: Tích hợp KernelSU vào Kernel
+
+      - name: Tích hợp KernelSU
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tkeyrus/KernelSU/main/kernel/setup.sh" | bash -s main
@@ -38,7 +39,7 @@ jobs:
           make O=out x00q_defconfig
           make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
 
-      - name: Đóng gói thành AnyKernel3 (.zip)
+      - name: Đóng gói AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
