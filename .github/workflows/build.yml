@@ -14,18 +14,18 @@ jobs:
       - name: Cài đặt công cụ biên dịch
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu curl
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Clone Nguồn Kernel X00QD (Snapdragon 636)
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU (Tự Patch Tận Gốc)
+      - name: Tích hợp KernelSU (Nhúng trực tiếp)
         run: |
           cd kernel
-          # Tải trực tiếp setup script chính thức của KernelSU Next
-          curl -LSs "https://raw.githubusercontent.com/rifs33/KernelSU-Next/next/kernel/setup.sh" -o setup.sh || curl -LSs "https://raw.githubusercontent.com/KernelSU/KernelSU/main/kernel/setup.sh" -o setup.sh
-          bash setup.sh main
+          git clone https://github.com/tkeyrus/KernelSU drivers/kernelsu --depth=1 || git clone https://github.com/rifs33/KernelSU-Next drivers/kernelsu --depth=1
+          echo "obj-y += kernelsu/" >> drivers/Makefile
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
       - name: Tải Toolchain Proton Clang
         run: |
