@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next (Đúng vị trí thư mục)
+      - name: Tích hợp KernelSU Next
         run: |
           cd kernel
           git clone https://github.com/KernelSU-Next/KernelSU-Next KSU --depth=1
@@ -39,7 +39,15 @@ jobs:
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          make O=out x00q_defconfig
+          # Tự động tìm defconfig chuẩn cho SDM660 / Asus X00Q
+          if [ -f arch/arm64/configs/sdm660_defconfig ]; then
+            DEFCONFIG=sdm660_defconfig
+          elif [ -f arch/arm64/configs/ASUS_X00Q_defconfig ]; then
+            DEFCONFIG=ASUS_X00Q_defconfig
+          else
+            DEFCONFIG=$(ls arch/arm64/configs/*defconfig | head -n 1 | xargs basename)
+          fi
+          make O=out $DEFCONFIG
           make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
       - name: Đóng gói AnyKernel3
