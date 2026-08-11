@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Bổ Sung Hàm Dummy Chuẩn Chữ Ký
+      - name: Tích hợp KernelSU Next & Fix Triệt Để LiveDisplay
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -30,8 +30,8 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Bổ sung hàm dummy khớp chính xác signature trả về void
-          echo -e "\nvoid mdss_dsi_panel_cmds_send(void *ctrl, ...) {}" >> drivers/video/fbdev/msm/mdss_livedisplay.c
+          # Vô hiệu hóa lệnh gọi mdss_dsi_panel_cmds_send trong mdss_livedisplay.c
+          sed -i 's/mdss_dsi_panel_cmds_send/\/\//g' drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
         run: |
