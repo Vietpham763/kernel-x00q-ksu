@@ -1,4 +1,4 @@
-name: Build KernelSU for Zenfone 5 (X00Q)
+name: Build KernelSU for Zenfone 5 (X00QD)
 
 on:
   workflow_dispatch:
@@ -16,29 +16,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-      - name: Clone Nguồn Kernel X00Q
+      - name: Clone Nguồn Kernel X00QD (Snapdragon 636)
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU
+      - name: Tích hợp KernelSU Official
         run: |
           cd kernel
-          git clone https://github.com/t-su/KernelSU drivers/kernelsu --depth=1 || git clone https://github.com/rsuntk/KernelSU drivers/kernelsu --depth=1
-          echo "obj-y += kernelsu/" >> drivers/Makefile
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          curl -LSs "https://raw.githubusercontent.com/tsu-SU/KernelSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/rifs33/KernelSU/main/kernel/setup.sh" | bash -
 
       - name: Tải Toolchain Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
 
-      - name: Biên dịch Kernel
+      - name: Biên dịch Kernel cho X00QD
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out x00q_defconfig
-          echo "CONFIG_KSU=y" >> out/.config
           make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
 
       - name: Đóng gói AnyKernel3
@@ -52,10 +49,10 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
           cd AnyKernel3
-          zip -r9 ../KernelSU-X00Q-Zip.zip * -x .git\* README.md *placeholder
+          zip -r9 ../KernelSU-X00QD-Zip.zip * -x .git\* README.md *placeholder
 
       - name: Tải file Zip Kernel về
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-X00Q-Zip
-          path: KernelSU-X00Q-Zip.zip
+          name: KernelSU-X00QD-Zip
+          path: KernelSU-X00QD-Zip.zip
