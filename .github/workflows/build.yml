@@ -46,7 +46,7 @@ jobs:
           make O=out sdm660_defconfig
           make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
-      - name: Đóng gói AnyKernel3 Cấu Trúc Chuẩn X00QD
+      - name: Cấu hình AnyKernel3 Chuẩn X00QD
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/README.md
@@ -60,16 +60,40 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
 
-          # Tinh chỉnh anykernel.sh đúng phân vùng boot của Snapdragon 660 (X00QD)
+          # Tạo file anykernel.sh hoàn toàn mới chuẩn cho Zenfone 5
+          cat << 'EOF' > AnyKernel3/anykernel.sh
+          # AnyKernel3 Setup
+          global.banner=boot;
+          properties() { '
+          kernel.string=KernelSU-Next for Zenfone 5 (X00QD)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuntil=0
+          device.name1=X00QD
+          device.name2=x00qd
+          device.name3=ASUS_X00QD
+          supported.versions=
+          supported.patchlevels=
+          '; }
+
+          # Block search / mounting
+          block=auto;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          # Import functions
+          . tools/ak3-core.sh;
+
+          # Install boot image
+          split_boot;
+          flash_boot;
+          EOF
+
+          # Nén trực tiếp nội dung thành file ZIP
           cd AnyKernel3
-          sed -i 's/kernel.string=.*/kernel.string=KernelSU-Next for Zenfone 5/g' anykernel.sh
-          sed -i 's/device.name1=.*/device.name1=X00QD/g' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=x00qd/g' anykernel.sh
-          sed -i 's/device.name3=.*/device.name3=ASUS_X00QD/g' anykernel.sh
-          sed -i 's|block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;|block=auto;|g' anykernel.sh
-          sed -i 's/is_slot_device=.*/is_slot_device=0;/g' anykernel.sh
-          
-          # Đóng gói zip chuẩn
           zip -r9 ../KernelSU-X00QD-Flashable.zip *
 
       - name: Tải file Zip Kernel về
