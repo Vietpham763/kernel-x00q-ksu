@@ -1,0 +1,56 @@
+name: Build KernelSU for Zenfone 5 (X00Q)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Cài đặt môi trường build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools clang llvm aarch64-linux-gnu-gcc
+
+      - name: Clone Nguồn Kernel crDroid X00Q
+        run: |
+          git clone https://github.com/crDroidMod/android_kernel_asus_X00Q -b 13.0 kernel
+          
+      - name: Tích hợp KernelSU vào Kernel
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/tkeyrus/KernelSU/main/kernel/setup.sh" | bash -s main
+
+      - name: Tải Toolchain Clang
+        run: |
+          git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
+
+      - name: Biên dịch Kernel
+        run: |
+          cd kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out x00q_defconfig
+          make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
+
+      - name: Đóng gói thành AnyKernel3 (.zip)
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          fi
+          cd AnyKernel3
+          zip -r9 ../KernelSU-X00Q-crDroid13.zip * -x .git\* README.md *placeholder
+
+      - name: Tải file Zip Kernel về
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-X00Q-Zip
+          path: KernelSU-X00Q-crDroid13.zip
