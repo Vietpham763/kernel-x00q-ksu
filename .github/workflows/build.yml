@@ -15,8 +15,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
-          # Tải magiskboot chính chủ
-          wget https://github.com/mzying2001/magiskboot-linux-x86_64/raw/main/magiskboot
+          
+          # Tải Magisk APK chính chủ để trích xuất magiskboot chuẩn x86_64
+          wget https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+          unzip Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so" -d .
+          mv lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
           sudo mv magiskboot /usr/local/bin/
 
@@ -51,7 +54,7 @@ jobs:
 
       - name: Unpack & Repack boot.img gốc với KernelSU mới
         run: |
-          # Kiểm tra file zip hoặc img
+          # Kiểm tra file boot.zip hoặc boot.img
           if [ -f boot.zip ]; then
             unzip boot.zip
           fi
@@ -65,7 +68,7 @@ jobs:
           cp boot.img workdir/
           cd workdir
 
-          # Unpack boot.img gốc
+          # Unpack boot.img gốc bằng magiskboot
           magiskboot unpack boot.img
 
           # Thay thế kernel bằng kernel vừa biên dịch
