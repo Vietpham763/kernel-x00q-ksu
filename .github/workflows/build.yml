@@ -20,7 +20,7 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
 
-      - name: Tích hợp KernelSU Next & Fix LiveDisplay Chuẩn Xác
+      - name: Tích hợp KernelSU Next & Match Exact Signature
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -30,8 +30,8 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Bổ sung hàm dummy khớp 100% prototype gốc dòng 52
-          echo -e "\n#include <linux/types.h>\nvoid mdss_dsi_panel_cmds_send(void *ctrl, void *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
+          # Forward declare đúng struct để định nghĩa hàm trùng khớp 100% với extern dòng 51
+          echo -e "\nstruct mdss_dsi_ctrl_pdata;\nstruct dsi_panel_cmds;\nvoid mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
         run: |
