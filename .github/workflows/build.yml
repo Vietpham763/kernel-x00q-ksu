@@ -16,7 +16,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
           
-          # Tải Magisk APK chính chủ để lấy magiskboot chuẩn
+          # Tải Magisk APK chính chủ để trích xuất magiskboot chuẩn
           wget https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
           unzip Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so" -d .
           mv lib/x86_64/libmagiskboot.so magiskboot
@@ -36,23 +36,24 @@ jobs:
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Struct fix
+          # Forward declare struct fix
           echo -e "\nstruct mdss_dsi_ctrl_pdata;\nstruct dsi_panel_cmds;\nvoid mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
 
       - name: Tải Toolchain Proton Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
 
-      - name: Biên dịch Kernel cho X00QD
+      - name: Biên dịch Kernel (Target Image.gz-dtb)
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out sdm660_defconfig
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
+          # Biên dịch chính xác ra file nén Image.gz-dtb
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz-dtb || make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz
 
-      - name: Unpack & Repack boot.img Chuẩn Kích Thước Phân Vùng
+      - name: Unpack & Repack boot.img Chuẩn 32MB
         run: |
           if [ -f boot.zip ]; then
             unzip -o boot.zip
@@ -63,7 +64,6 @@ jobs:
             exit 1
           fi
 
-          # Lấy dung lượng chuẩn byte của boot.img gốc
           ORIG_SIZE=$(stat -c%s "boot.img")
           echo "Kích thước boot.img gốc: $ORIG_SIZE bytes"
 
@@ -71,34 +71,37 @@ jobs:
           cp boot.img workdir/
           cd workdir
 
-          # Unpack boot.img gốc
+          # Unpack boot.img gốc bằng magiskboot
           magiskboot unpack boot.img
 
-          # Thay thế kernel bằng KernelSU mới
+          # Đảm bảo kernel đưa vào luôn là dạng nén gzip
           if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Dùng Image.gz-dtb vừa compile"
             cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
+            echo "Dùng Image.gz vừa compile"
             cp ../kernel/out/arch/arm64/boot/Image.gz kernel
           elif [ -f ../kernel/out/arch/arm64/boot/Image ]; then
-            cp ../kernel/out/arch/arm64/boot/Image kernel
+            echo "Thấy Image thô, tiến hành nén gzip -9"
+            gzip -9 -c ../kernel/out/arch/arm64/boot/Image > kernel
           fi
 
           # Repack lại boot image
           magiskboot repack boot.img new-boot.img
 
           NEW_SIZE=$(stat -c%s "new-boot.img")
-          echo "Kích thước file mới tạo: $NEW_SIZE bytes"
+          echo "Kích thước file mới repack: $NEW_SIZE bytes"
 
           if [ $NEW_SIZE -gt $ORIG_SIZE ]; then
-            echo "LỖI: File mới ($NEW_SIZE) vượt quá dung lượng phân vùng gốc ($ORIG_SIZE)!"
+            echo "LỖI: File mới ($NEW_SIZE) vẫn vượt quá dung lượng gốc ($ORIG_SIZE)!"
             exit 1
           fi
 
-          # Padding chính xác bằng dd để khớp chuẩn từng byte với file gốc
+          # Padding chính xác bằng dd khớp 100% từng byte dung lượng 32MB phân vùng boot
           cp new-boot.img ../boot_ksu.img
           PAD_BYTES=$((ORIG_SIZE - NEW_SIZE))
           if [ $PAD_BYTES -gt 0 ]; then
-            echo "Padding thêm $PAD_BYTES bytes trống vào đuôi file..."
+            echo "Padding thêm $PAD_BYTES bytes trống..."
             dd if=/dev/zero bs=1 count=$PAD_BYTES >> ../boot_ksu.img
           fi
 
