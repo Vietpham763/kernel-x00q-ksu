@@ -51,7 +51,7 @@ jobs:
           git clone https://github.com/osm0sis/AnyKernel3 --depth=1 AnyKernel3
           rm -rf AnyKernel3/.git AnyKernel3/README.md
           
-          # Copy file kernel image vào thư mục AnyKernel3
+          # Copy file kernel image vào AnyKernel3
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
@@ -60,13 +60,13 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
 
-          # Tinh chỉnh anykernel.sh cho X00QD (sdm660)
+          # Tinh chỉnh name cho X00QD
           cd AnyKernel3
           sed -i 's/device.name1=.*/device.name1=X00QD/g' anykernel.sh
           sed -i 's/device.name2=.*/device.name2=x00qd/g' anykernel.sh
           sed -i 's/device.name3=.*/device.name3=ASUS_X00QD/g' anykernel.sh
           
-          # Đóng gói zip đúng chuẩn Recovery
+          # Đóng gói zip chuẩn
           zip -r9 ../KernelSU-X00QD-Flashable.zip *
 
       - name: Tải file Zip Kernel về
@@ -74,3 +74,4 @@ jobs:
         with:
           name: KernelSU-X00QD-Flashable
           path: KernelSU-X00QD-Flashable.zip
+          compression-level: 0
