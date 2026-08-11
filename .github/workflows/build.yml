@@ -14,7 +14,7 @@ jobs:
       - name: Cài đặt công cụ biên dịch
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu curl unzip
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Clone Nguồn Kernel X00QD (Snapdragon 636)
         run: |
@@ -23,11 +23,7 @@ jobs:
       - name: Tích hợp KernelSU Next
         run: |
           cd kernel
-          mkdir -p drivers/kernelsu
-          curl -LSs https://github.com/rifs33/KernelSU-Next/archive/refs/heads/next.zip -o ksu.zip
-          unzip -q ksu.zip
-          cp -r KernelSU-Next-next/kernel/* drivers/kernelsu/
-          rm -rf ksu.zip KernelSU-Next-next
+          git submodule add -f https://github.com/KernelSU-Next/KernelSU-Next.git drivers/kernelsu
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
