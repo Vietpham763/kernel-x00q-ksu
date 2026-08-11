@@ -60,7 +60,7 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
 
-          # Tạo file anykernel.sh hoàn toàn mới chuẩn cho Zenfone 5
+          # Tạo file anykernel.sh tự động quét các đường dẫn boot thực tế
           cat << 'EOF' > AnyKernel3/anykernel.sh
           # AnyKernel3 Setup
           global.banner=boot;
@@ -78,8 +78,15 @@ jobs:
           supported.patchlevels=
           '; }
 
-          # Block search / mounting
+          # Dò tìm đúng đường dẫn block boot trong Recovery
           block=auto;
+          for p in /dev/block/bootdevice/by-name/boot /dev/block/platform/soc/c0c4000.sdhci/by-name/boot /dev/block/platform/soc/7824900.sdhci/by-name/boot /dev/block/by-name/boot; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              block="$p";
+              break;
+            fi
+          done
+
           is_slot_device=0;
           ramdisk_compression=auto;
           patch_vbmeta_flag=auto;
