@@ -20,10 +20,11 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU (Bypass Link Chết)
+      - name: Tích hợp KernelSU Next / KernelSU
         run: |
           cd kernel
-          git clone https://github.com/tkeyrus/KernelSU.git drivers/kernelsu --depth=1 || git clone https://github.com/rifs33/KernelSU.git drivers/kernelsu --depth=1
+          export GIT_TERMINAL_PROMPT=0
+          git clone https://github.com/rifs33/KernelSU-Next drivers/kernelsu --depth=1 || git clone https://github.com/rsuntk/KernelSU drivers/kernelsu --depth=1
           echo "obj-y += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
