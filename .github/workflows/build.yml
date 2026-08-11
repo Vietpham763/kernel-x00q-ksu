@@ -20,10 +20,12 @@ jobs:
         run: |
           git clone https://github.com/LineageOS/android_kernel_asus_sdm660 --depth=1 kernel
 
-      - name: Tích hợp KernelSU
+      - name: Tích hợp KernelSU (Git clone trực tiếp)
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tkeyrus/KernelSU/main/kernel/setup.sh" | bash -s main || curl -LSs "https://raw.githubusercontent.com/rifs33/KernelSU/main/kernel/setup.sh" | bash -
+          git clone https://github.com/tkeyrus/KernelSU drivers/kernelsu --depth=1
+          echo "obj-y += kernelsu/" >> drivers/Makefile
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
       - name: Tải Toolchain Clang
         run: |
@@ -36,6 +38,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out x00q_defconfig
+          echo "CONFIG_KSU=y" >> out/.config
           make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu-
 
       - name: Đóng gói AnyKernel3
@@ -45,6 +48,8 @@ jobs:
             cp kernel/out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
             cp kernel/out/arch/arm64/boot/Image.gz AnyKernel3/
+          elif [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp kernel/out/arch/arm64/boot/Image AnyKernel3/
           fi
           cd AnyKernel3
           zip -r9 ../KernelSU-X00Q-Zip.zip * -x .git\* README.md *placeholder
