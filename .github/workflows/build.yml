@@ -1,27 +1,80 @@
-      - name: Unpack & Repack boot.img gốc với KernelSU mới
+name: Build KernelSU Boot Image for Zenfone 5 (X00QD)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Cài đặt công cụ biên dịch & Magiskboot
         run: |
-          # Kiểm tra file boot.zip hoặc boot.img
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          
+          # Tải Magisk APK chính chủ để lấy magiskboot chuẩn
+          wget https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+          unzip Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so" -d .
+          mv lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
+
+      - name: Clone Nguồn Kernel X00QD (Nhánh Stable lineage-18.1)
+        run: |
+          git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
+
+      - name: Tích hợp KernelSU Next & Fix Signature
+        run: |
+          cd kernel
+          git clone https://github.com/KernelSU-Next/KernelSU-Next KSU --depth=1
+          cp -r KSU/kernel drivers/kernelsu
+          rm -rf KSU
+          echo "obj-y += kernelsu/" >> drivers/Makefile
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+
+          # Struct fix
+          echo -e "\nstruct mdss_dsi_ctrl_pdata;\nstruct dsi_panel_cmds;\nvoid mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
+
+      - name: Tải Toolchain Proton Clang
+        run: |
+          git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
+
+      - name: Biên dịch Kernel cho X00QD
+        run: |
+          cd kernel
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out sdm660_defconfig
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
+
+      - name: Unpack & Repack boot.img Chuẩn Kích Thước Phân Vùng
+        run: |
           if [ -f boot.zip ]; then
-            unzip boot.zip
+            unzip -o boot.zip
           fi
 
           if [ ! -f boot.img ]; then
-            echo "LỖI: Không tìm thấy boot.img hoặc boot.zip trong repository!"
+            echo "LỖI: Không tìm thấy boot.img trong repository!"
             exit 1
           fi
 
-          # Lấy kích thước chuẩn (byte) của file boot.img gốc
+          # Lấy dung lượng chuẩn byte của boot.img gốc
           ORIG_SIZE=$(stat -c%s "boot.img")
-          echo "Kích thước gốc boot.img: $ORIG_SIZE bytes"
+          echo "Kích thước boot.img gốc: $ORIG_SIZE bytes"
 
           mkdir workdir
           cp boot.img workdir/
           cd workdir
 
-          # Unpack boot.img gốc bằng magiskboot
+          # Unpack boot.img gốc
           magiskboot unpack boot.img
 
-          # Thay thế kernel bằng kernel vừa biên dịch
+          # Thay thế kernel bằng KernelSU mới
           if [ -f ../kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
           elif [ -f ../kernel/out/arch/arm64/boot/Image.gz ]; then
@@ -30,10 +83,27 @@
             cp ../kernel/out/arch/arm64/boot/Image kernel
           fi
 
-          # Repack lại
-          magiskboot repack boot.img ../boot_raw.img
+          # Repack lại boot image
+          magiskboot repack boot.img new-boot.img
 
-          # Cắt (truncate) file mới về đúng 100% kích thước phân vùng boot gốc
-          cd ..
-          cp boot_raw.img boot_ksu.img
-          truncate -s $ORIG_SIZE boot_ksu.img
+          NEW_SIZE=$(stat -c%s "new-boot.img")
+          echo "Kích thước file mới tạo: $NEW_SIZE bytes"
+
+          if [ $NEW_SIZE -gt $ORIG_SIZE ]; then
+            echo "LỖI: File mới ($NEW_SIZE) vượt quá dung lượng phân vùng gốc ($ORIG_SIZE)!"
+            exit 1
+          fi
+
+          # Padding chính xác bằng dd để khớp chuẩn từng byte với file gốc
+          cp new-boot.img ../boot_ksu.img
+          PAD_BYTES=$((ORIG_SIZE - NEW_SIZE))
+          if [ $PAD_BYTES -gt 0 ]; then
+            echo "Padding thêm $PAD_BYTES bytes trống vào đuôi file..."
+            dd if=/dev/zero bs=1 count=$PAD_BYTES >> ../boot_ksu.img
+          fi
+
+      - name: Tải file boot_ksu.img về
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot_ksu_X00QD
+          path: boot_ksu.img
