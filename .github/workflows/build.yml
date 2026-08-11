@@ -14,7 +14,7 @@ jobs:
       - name: Cài đặt công cụ biên dịch & Magiskboot
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi
+          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi device-tree-compiler
           
           # Tải Magisk APK chính chủ để trích xuất magiskboot chuẩn
           wget https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
@@ -43,16 +43,16 @@ jobs:
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
 
-      - name: Biên dịch Kernel cho X00QD
+      - name: Biên dịch Kernel (Target Image.gz & DTBs)
         run: |
           cd kernel
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out sdm660_defconfig
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz dtbs
 
-      - name: Unpack & Repack boot.img Chuẩn Kích Thước 32MB
+      - name: Unpack & Repack boot.img Chuẩn 32MB
         run: |
           if [ -f boot.zip ]; then
             unzip -o boot.zip
@@ -73,24 +73,28 @@ jobs:
           # Unpack boot.img gốc bằng magiskboot
           magiskboot unpack boot.img
 
-          # Xử lý nén kernel bắt buộc dạng gzip -9 để giảm kích thước từ 50MB xuống 12MB
           KOUT="../kernel/out/arch/arm64/boot"
-          if [ -f "$KOUT/Image.gz-dtb" ]; then
-            echo "Tìm thấy Image.gz-dtb sẵn có"
-            cp "$KOUT/Image.gz-dtb" kernel
-          elif [ -f "$KOUT/Image.gz" ]; then
-            echo "Tìm thấy Image.gz sẵn có"
-            cp "$KOUT/Image.gz" kernel
-          elif [ -f "$KOUT/Image" ]; then
-            echo "Tìm thấy Image thô (50MB), tiến hành ép nén gzip -9..."
-            gzip -9 -n -c "$KOUT/Image" > kernel
+          
+          # Nén Image thô bằng gzip -9 nếu chưa nén
+          if [ -f "$KOUT/Image.gz" ]; then
+            cp "$KOUT/Image.gz" kernel.gz
           else
-            echo "Không tìm thấy file kernel đầu ra!"
-            exit 1
+            gzip -9 -n -c "$KOUT/Image" > kernel.gz
+          fi
+
+          # Nối DTB (Device Tree) vào đuôi file Image.gz (Tạo Appended DTB chuẩn nén ~14MB)
+          if [ -f "kernel_dtb" ]; then
+            echo "Gợi ý: Tìm thấy kernel_dtb từ file boot gốc, tiến hành ghép..."
+            cat kernel.gz kernel_dtb > kernel
+          elif [ -d "$KOUT/dts/qcom" ]; then
+            echo "Tìm thấy DTB trong thư mục build..."
+            cat kernel.gz $KOUT/dts/qcom/*.dtb > kernel 2>/dev/null || cp kernel.gz kernel
+          else
+            cp kernel.gz kernel
           fi
 
           K_SIZE=$(stat -c%s "kernel")
-          echo "Kích thước kernel sau khi chuẩn bị nạp: $K_SIZE bytes"
+          echo "Kích thước Kernel đã nén chuẩn bị nạp: $K_SIZE bytes"
 
           # Repack lại boot image
           magiskboot repack boot.img new-boot.img
