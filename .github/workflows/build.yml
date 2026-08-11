@@ -40,6 +40,8 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out sdm660_defconfig
+          # Fix lỗi link LiveDisplay
+          sed -i 's/CONFIG_FB_MSM_MDSS_LIVEDISPLAY=y/# CONFIG_FB_MSM_MDSS_LIVEDISPLAY is not set/' out/.config
           make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error"
 
       - name: Đóng gói AnyKernel3
