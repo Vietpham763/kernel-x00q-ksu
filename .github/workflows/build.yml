@@ -24,7 +24,7 @@ jobs:
 
 
       # ==========================================================
-      # 2. INSTALL DEPENDENCIES
+      # 2. DEPENDENCIES
       # ==========================================================
       - name: Install dependencies
         run: |
@@ -53,7 +53,7 @@ jobs:
 
 
       # ==========================================================
-      # 3. EXTRACT BOOT.IMG
+      # 3. EXTRACT ORIGINAL BOOT
       # ==========================================================
       - name: Extract crDroid boot.img
         run: |
@@ -95,7 +95,7 @@ jobs:
 
           test -x magiskboot
 
-          echo "MagiskBoot installed successfully."
+          echo "MagiskBoot ready."
 
 
       # ==========================================================
@@ -148,7 +148,7 @@ jobs:
           echo "ORIGINAL KERNEL"
           echo "=========================================="
 
-          echo "Size:"
+          echo "Kernel size:"
           stat -c "%s bytes" kernel
 
           echo ""
@@ -157,7 +157,7 @@ jobs:
           strings kernel \
             | grep -E \
               'Linux version|Coldplaylite|4\.4\.' \
-            | head -20 \
+            | head -30 \
             || true
 
 
@@ -185,13 +185,34 @@ jobs:
           git log -1 --oneline
 
           echo ""
-          echo "Kernel version:"
+          echo "Kernel version BEFORE CLEAN:"
 
           make kernelversion
 
 
       # ==========================================================
-      # 8. SHOW DEFCONFIG
+      # 8. CLEAN KERNEL SOURCE
+      # ==========================================================
+      - name: Clean kernel source
+        run: |
+          set -eux
+
+          cd kernel
+
+          echo "=========================================="
+          echo "CLEAN KERNEL SOURCE"
+          echo "=========================================="
+
+          make mrproper
+
+          git status --short
+
+          echo ""
+          echo "Source tree cleaned."
+
+
+      # ==========================================================
+      # 9. FIND DEFCONFIG
       # ==========================================================
       - name: Find defconfig
         run: |
@@ -216,7 +237,7 @@ jobs:
 
 
       # ==========================================================
-      # 9. INTEGRATE KERNELSU
+      # 10. INTEGRATE KERNELSU
       # ==========================================================
       - name: Integrate KernelSU
         run: |
@@ -230,13 +251,14 @@ jobs:
 
           test -d KernelSU
 
-          echo "KernelSU ${KSU_VERSION} integrated."
+          echo ""
+          echo "KernelSU integrated."
 
 
       # ==========================================================
-      # 10. CONFIGURE KERNEL
+      # 11. CREATE OUTPUT DIRECTORY
       # ==========================================================
-      - name: Configure kernel
+      - name: Prepare build output
         run: |
           set -eux
 
@@ -245,6 +267,18 @@ jobs:
           rm -rf out
 
           mkdir -p out
+
+          echo "Output directory prepared."
+
+
+      # ==========================================================
+      # 12. CONFIGURE KERNEL
+      # ==========================================================
+      - name: Configure kernel
+        run: |
+          set -eux
+
+          cd kernel
 
           make O=out sdm660_defconfig
 
@@ -258,7 +292,7 @@ jobs:
             --file out/.config \
             --enable CONFIG_OVERLAY_FS
 
-          # Disable module signing
+          # Module signing
           ./scripts/config \
             --file out/.config \
             --disable CONFIG_MODULE_SIG
@@ -276,7 +310,7 @@ jobs:
           ./scripts/config \
             --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
 
-          # Old ARM64 kernel compatibility
+          # ARM64 compatibility
           ./scripts/config \
             --disable CONFIG_VDSO32
 
@@ -286,15 +320,16 @@ jobs:
           make O=out olddefconfig
 
           echo ""
-          echo "KernelSU config:"
+          echo "KernelSU:"
           grep '^CONFIG_KSU=' out/.config || true
 
-          echo "OverlayFS config:"
+          echo ""
+          echo "OverlayFS:"
           grep '^CONFIG_OVERLAY_FS=' out/.config || true
 
 
       # ==========================================================
-      # 11. DOWNLOAD ANDROID CLANG
+      # 13. DOWNLOAD CLANG
       # ==========================================================
       - name: Download Android Clang
         run: |
@@ -305,7 +340,7 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang
 
-          echo "Clang found:"
+          echo "Clang versions:"
 
           find clang \
             -type f \
@@ -314,7 +349,7 @@ jobs:
 
 
       # ==========================================================
-      # 12. BUILD KERNEL
+      # 14. BUILD KERNEL
       # ==========================================================
       - name: Build kernel
         run: |
@@ -339,10 +374,17 @@ jobs:
           export SUBARCH=arm64
 
           echo "=========================================="
-          echo "CLANG"
+          echo "COMPILER"
           echo "=========================================="
 
           clang --version
+
+          echo ""
+          echo "=========================================="
+          echo "KERNEL VERSION"
+          echo "=========================================="
+
+          make kernelversion
 
           echo ""
           echo "=========================================="
@@ -363,54 +405,30 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "KERNEL BUILD SUCCESS"
+          echo "BUILD SUCCESS"
           echo "=========================================="
 
           ls -lh out/arch/arm64/boot/Image.gz
 
 
       # ==========================================================
-      # 13. VERIFY NEW KERNEL
+      # 15. PREPARE NEW KERNEL
       # ==========================================================
-      - name: Verify new kernel
-        run: |
-          set -eux
-
-          NEW_KERNEL="kernel/out/arch/arm64/boot/Image.gz"
-
-          test -f "${NEW_KERNEL}"
-
-          echo "New kernel size:"
-          stat -c "%s bytes" "${NEW_KERNEL}"
-
-          echo ""
-          echo "Kernel version strings:"
-
-          strings "${NEW_KERNEL}" \
-            | grep -E \
-              'Linux version|4\.4\.' \
-            | head -20 \
-            || true
-
-
-      # ==========================================================
-      # 14. REPLACE KERNEL
-      # ==========================================================
-      - name: Replace kernel and preserve DTB
+      - name: Prepare kernel and preserve original DTB
         run: |
           set -eux
 
           cd boot_work
 
-          cp kernel kernel.original
-
           NEW_KERNEL="../kernel/out/arch/arm64/boot/Image.gz"
 
           test -f "${NEW_KERNEL}"
 
+          cp kernel kernel.original
+
           if [ -f kernel_dtb ]; then
 
-            echo "Separate kernel_dtb detected."
+            echo "Using original kernel_dtb."
 
             cp kernel_dtb ../original_kernel_dtb
 
@@ -432,13 +450,13 @@ jobs:
           fi
 
           echo ""
-          echo "Final kernel size:"
+          echo "New kernel size:"
 
           stat -c "%s bytes" kernel
 
 
       # ==========================================================
-      # 15. REPACK BOOT
+      # 16. REPACK BOOT
       # ==========================================================
       - name: Repack boot.img
         run: |
@@ -450,7 +468,7 @@ jobs:
           cd boot_work
 
           echo "=========================================="
-          echo "REPACKING BOOT IMAGE"
+          echo "REPACK BOOT"
           echo "=========================================="
 
           ../magiskboot repack \
@@ -468,9 +486,9 @@ jobs:
 
 
       # ==========================================================
-      # 16. VALIDATE BOOT IMAGE
+      # 17. VALIDATE BOOT
       # ==========================================================
-      - name: Validate boot_ksu.img
+      - name: Validate boot image
         run: |
           set -eux
 
@@ -488,14 +506,14 @@ jobs:
 
           echo ""
           echo "=========================================="
-          echo "BOOT IMAGE VALIDATION SUCCESS"
+          echo "VALIDATION SUCCESS"
           echo "=========================================="
 
           ls -lah
 
 
       # ==========================================================
-      # 17. BUILD INFO
+      # 18. BUILD INFORMATION
       # ==========================================================
       - name: Generate build information
         run: |
@@ -508,13 +526,13 @@ jobs:
             echo "Kernel branch: ${KERNEL_BRANCH}"
             echo "KernelSU: ${KSU_VERSION}"
             echo ""
-            echo "Original boot size:"
+            echo "Original boot:"
             stat -c "%s bytes" original/boot.img
             echo ""
-            echo "New boot size:"
+            echo "New boot:"
             stat -c "%s bytes" boot_ksu.img
             echo ""
-            echo "New kernel size:"
+            echo "New kernel:"
             stat -c "%s bytes" kernel/out/arch/arm64/boot/Image.gz
           } > build-info.txt
 
@@ -522,7 +540,7 @@ jobs:
 
 
       # ==========================================================
-      # 18. UPLOAD BOOT
+      # 19. UPLOAD BOOT
       # ==========================================================
       - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
@@ -532,7 +550,7 @@ jobs:
 
 
       # ==========================================================
-      # 19. UPLOAD DEBUG
+      # 20. UPLOAD DEBUG
       # ==========================================================
       - name: Upload debug files
         uses: actions/upload-artifact@v4
