@@ -12,12 +12,12 @@ jobs:
       # ============================================================
       # CHECKOUT
       # ============================================================
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
       # ============================================================
-      # BUILD DEPENDENCIES
+      # DEPENDENCIES
       # ============================================================
       - name: Install build dependencies
         shell: bash
@@ -43,6 +43,7 @@ jobs:
             rsync \
             device-tree-compiler \
             python3 \
+            python3-pip \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi \
@@ -50,27 +51,29 @@ jobs:
 
 
       # ============================================================
-      # CHECK INPUT BOOT
+      # CHECK INPUT FILES
       # ============================================================
-      - name: Check original boot image
+      - name: Check repository files
         shell: bash
         run: |
           set -euxo pipefail
 
           echo "=========================================="
-          echo "CHECK BOOT IMAGE"
+          echo "REPOSITORY"
           echo "=========================================="
 
-          if [ -f boot.zip ]; then
-            unzip -o boot.zip
-          fi
+          pwd
+          ls -lah
 
-          test -f boot.img
+          echo "=========================================="
+          echo "SEARCH boot.img"
+          echo "=========================================="
 
-          echo "boot.img:"
-          ls -lh boot.img
-
-          file boot.img
+          find . \
+            -maxdepth 4 \
+            -type f \
+            -name "boot.img" \
+            -print || true
 
 
       # ============================================================
@@ -82,22 +85,19 @@ jobs:
           set -euxo pipefail
 
           MAGISK_VERSION="27.0"
-          MAGISK_URL="https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VERSION}/Magisk-v${MAGISK_VERSION}.apk"
 
-          rm -rf Magisk.apk magisk_extract magiskboot
+          wget -q -O Magisk.apk \
+            "https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VERSION}/Magisk-v${MAGISK_VERSION}.apk"
 
-          wget -q \
-            -O Magisk.apk \
-            "$MAGISK_URL"
-
+          rm -rf magisk_extract
           mkdir -p magisk_extract
 
-          unzip -o \
-            Magisk.apk \
+          unzip -o Magisk.apk \
             "lib/x86_64/libmagiskboot.so" \
             -d magisk_extract
 
-          test -f magisk_extract/lib/x86_64/libmagiskboot.so
+          test -f \
+            magisk_extract/lib/x86_64/libmagiskboot.so
 
           cp \
             magisk_extract/lib/x86_64/libmagiskboot.so \
@@ -105,25 +105,152 @@ jobs:
 
           chmod +x magiskboot
 
-          echo "=========================================="
-          echo "MAGISKBOOT"
-          echo "=========================================="
-
-          file magiskboot
-          ls -lh magiskboot
-
-          # DO NOT run --help here.
-          # MagiskBoot prints help but intentionally returns exit code 1.
-          test -x magiskboot
+          ./magiskboot --help
 
           sudo cp magiskboot /usr/local/bin/magiskboot
-          sudo chmod +x /usr/local/bin/magiskboot
 
-          test -x /usr/local/bin/magiskboot
+          magiskboot --help
 
 
       # ============================================================
-      # EXTRACT ORIGINAL KERNEL CONFIG
+      # CLONE KERNEL SOURCE
+      # ============================================================
+      - name: Clone ASUS SDM660 kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf kernel
+
+          git clone \
+            --depth=1 \
+            -b lineage-18.1 \
+            https://github.com/LineageOS/android_kernel_asus_sdm660 \
+            kernel
+
+          test -d kernel
+          test -f kernel/Makefile
+          test -d kernel/arch/arm64
+
+          cd kernel
+
+          echo "=========================================="
+          echo "KERNEL SOURCE"
+          echo "=========================================="
+
+          git log -1 --oneline
+          git status --short
+
+          echo "Kernel path:"
+          pwd
+
+          echo "Kernel Makefile:"
+          test -f Makefile
+
+          echo "ARM64:"
+          test -d arch/arm64
+
+
+      # ============================================================
+      # FIND EXTRACT-I KCONFIG
+      # ============================================================
+      - name: Locate extract-ikconfig
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "=========================================="
+          echo "SEARCH extract-ikconfig"
+          echo "=========================================="
+
+          find kernel \
+            -type f \
+            \( \
+              -name "extract-ikconfig" \
+              -o \
+              -name "extract-ikconfig*" \
+            \) \
+            -print
+
+          if [ ! -f kernel/scripts/extract-ikconfig ]; then
+            echo "ERROR: kernel/scripts/extract-ikconfig does not exist."
+
+            echo "Available kernel scripts:"
+            find kernel/scripts \
+              -maxdepth 2 \
+              -type f \
+              -printf '%p\n' \
+              | sort \
+              | head -200
+
+            exit 1
+          fi
+
+          chmod +x kernel/scripts/extract-ikconfig
+
+
+      # ============================================================
+      # FIND BOOT IMAGE
+      # ============================================================
+      - name: Prepare original boot image
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "=========================================="
+          echo "SEARCH ORIGINAL BOOT"
+          echo "=========================================="
+
+          BOOT_FOUND=""
+
+          if [ -f boot.img ]; then
+            BOOT_FOUND="boot.img"
+          elif [ -f boot.zip ]; then
+            echo "boot.zip found."
+
+            unzip -l boot.zip
+
+            unzip -o boot.zip
+
+            if [ -f boot.img ]; then
+              BOOT_FOUND="boot.img"
+            fi
+          fi
+
+          if [ -z "$BOOT_FOUND" ]; then
+            echo "Searching repository for boot.img..."
+
+            FOUND=$(find . \
+              -path ./kernel \
+              -prune \
+              -o \
+              -type f \
+              -name "boot.img" \
+              -print \
+              | head -1 || true)
+
+            if [ -n "$FOUND" ]; then
+              cp "$FOUND" boot.img
+              BOOT_FOUND="boot.img"
+            fi
+          fi
+
+          if [ -z "$BOOT_FOUND" ]; then
+            echo "ERROR: boot.img was not found."
+            echo ""
+            echo "The workflow requires the original ZE620KL boot.img."
+            echo "Place boot.img in the repository root."
+            exit 1
+          fi
+
+          test -f boot.img
+
+          echo "Original boot image:"
+          ls -lh boot.img
+
+
+      # ============================================================
+      # EXTRACT ORIGINAL CONFIG
       # ============================================================
       - name: Extract original kernel config
         shell: bash
@@ -134,25 +261,35 @@ jobs:
           echo "EXTRACT ORIGINAL CONFIG"
           echo "=========================================="
 
+          test -f boot.img
+          test -f kernel/scripts/extract-ikconfig
+
           rm -f kernel_config_goc
 
           chmod +x kernel/scripts/extract-ikconfig
 
-          if kernel/scripts/extract-ikconfig boot.img \
-              > kernel_config_goc 2>/dev/null; then
+          if kernel/scripts/extract-ikconfig \
+              boot.img > kernel_config_goc 2>/dev/null; then
 
-            test -s kernel_config_goc
+            if [ ! -s kernel_config_goc ]; then
+              echo "ERROR: extracted config is empty."
+              exit 1
+            fi
 
             echo "Original kernel config extracted."
 
-            grep -E \
-              '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=' \
-              kernel_config_goc || true
-
           else
-            echo "ERROR: Unable to extract kernel config from boot.img"
+            echo "ERROR: Unable to extract kernel config from boot.img."
             exit 1
           fi
+
+          echo "=========================================="
+          echo "CONFIG CHECK"
+          echo "=========================================="
+
+          grep -E \
+            '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=' \
+            kernel_config_goc || true
 
 
       # ============================================================
@@ -166,32 +303,21 @@ jobs:
           cd kernel
 
           echo "=========================================="
-          echo "SOURCE BEFORE CLEAN"
+          echo "CLEAN SOURCE"
           echo "=========================================="
 
-          git log -1 --oneline
+          make ARCH=arm64 mrproper
+
+          echo "Kernel source cleaned."
 
           test -f Makefile
           test -d arch/arm64
 
-          # IMPORTANT:
-          # Clean the source BEFORE creating the O=out build tree.
-          # This prevents:
-          # ".. is not clean, please run make mrproper"
-          #
-          # mrproper does not remove normal source files such as
-          # arch/arm64/configs/*.config.
-          make ARCH=arm64 mrproper
-
-          rm -rf out
-
-          echo "Kernel source cleaned."
-
 
       # ============================================================
-      # CREATE CUSTOM DEFCONFIG
+      # INSTALL ORIGINAL DEFCONFIG
       # ============================================================
-      - name: Create custom kernel defconfig
+      - name: Install original kernel config
         shell: bash
         run: |
           set -euxo pipefail
@@ -199,10 +325,12 @@ jobs:
           cd kernel
 
           echo "=========================================="
-          echo "CREATE CUSTOM DEFCONFIG"
+          echo "INSTALL DEFCONFIG"
           echo "=========================================="
 
           test -s ../kernel_config_goc
+
+          mkdir -p arch/arm64/configs
 
           cp \
             ../kernel_config_goc \
@@ -211,11 +339,10 @@ jobs:
           test -f \
             arch/arm64/configs/custom_x00qd_defconfig
 
-          echo "Custom defconfig created."
+          echo "Defconfig installed."
 
-          grep -E \
-            '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=' \
-            arch/arm64/configs/custom_x00qd_defconfig || true
+          wc -l \
+            arch/arm64/configs/custom_x00qd_defconfig
 
 
       # ============================================================
@@ -250,181 +377,18 @@ jobs:
 
           test -d drivers/kernelsu
 
-          # KernelSU Kconfig
-          if ! grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig; then
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          fi
-
-          # KernelSU Makefile
           if ! grep -q 'obj-y += kernelsu/' drivers/Makefile; then
             echo 'obj-y += kernelsu/' >> drivers/Makefile
           fi
 
-          echo "KernelSU integration complete."
-
-
-      # ============================================================
-      # PREPARE KERNEL CONFIG
-      # ============================================================
-      - name: Prepare kernel config
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd kernel
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          rm -rf out
-          mkdir -p out
-
-          echo "=========================================="
-          echo "CREATE KERNEL CONFIG"
-          echo "=========================================="
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            custom_x00qd_defconfig
-
-          test -f out/.config
-
-          echo "=========================================="
-          echo "CONFIGURATION FIXES"
-          echo "=========================================="
-
-          # ----------------------------------------------------------
-          # WALT
-          #
-          # The SDM660 scheduler source uses:
-          #   task_struct.ravg
-          #   task_struct.last_sleep_ts
-          #
-          # These are provided by CONFIG_SCHED_WALT.
-          # The previous build had WALT disabled, causing:
-          #
-          # error: no member named 'last_sleep_ts'
-          # error: no member named 'ravg'
-          # ----------------------------------------------------------
-
-          ./scripts/config \
-            --file out/.config \
-            --enable SCHED_WALT
-
-          # Qualcomm WALT scheduler normally works together with
-          # scheduler frequency input support in this kernel tree.
-          if grep -q 'config SCHED_FREQ_INPUT' Kconfig \
-             || grep -Rqs 'config SCHED_FREQ_INPUT' kernel/sched \
-             || grep -Rqs 'CONFIG_SCHED_FREQ_INPUT' .; then
-
-            ./scripts/config \
-              --file out/.config \
-              --enable SCHED_FREQ_INPUT || true
+          if ! grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
 
-          # ----------------------------------------------------------
-          # VDSO32
-          #
-          # Keep VDSO32 disabled because this old kernel tree can
-          # trigger the GNU assembler -EL problem on the Android
-          # userspace compatibility path.
-          # ----------------------------------------------------------
+          echo "KernelSU integrated."
 
-          ./scripts/config \
-            --file out/.config \
-            --disable VDSO32
-
-          ./scripts/config \
-            --file out/.config \
-            --disable COMPAT_VDSO
-
-          # IMPORTANT:
-          # DO NOT disable CONFIG_COMPAT.
-          #
-          # COMPAT is required for 32-bit userspace support and is
-          # unrelated to the previous assembler problem.
-          #
-          # Therefore we intentionally leave CONFIG_COMPAT alone.
-
-          # ----------------------------------------------------------
-          # KernelSU
-          # ----------------------------------------------------------
-
-          ./scripts/config \
-            --file out/.config \
-            --enable KSU
-
-          # ----------------------------------------------------------
-          # OverlayFS
-          # ----------------------------------------------------------
-
-          ./scripts/config \
-            --file out/.config \
-            --enable OVERLAY_FS
-
-          # ----------------------------------------------------------
-          # Module signing
-          # ----------------------------------------------------------
-
-          ./scripts/config \
-            --file out/.config \
-            --set-str SYSTEM_TRUSTED_KEYS ""
-
-          ./scripts/config \
-            --file out/.config \
-            --set-str SYSTEM_REVOCATION_KEYS ""
-
-          ./scripts/config \
-            --disable MODULE_SIG
-
-          # ----------------------------------------------------------
-          # Old kernel + new host compatibility
-          # ----------------------------------------------------------
-
-          ./scripts/config \
-            --set-str CONFIG_LOCALVERSION "-KernelSU"
-
-          # Re-resolve dependencies after all changes.
-          make \
-            O=out \
-            ARCH=arm64 \
-            olddefconfig
-
-          echo "=========================================="
-          echo "FINAL CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_KSU|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=' \
-            out/.config || true
-
-          echo "=========================================="
-          echo "VERIFY REQUIRED CONFIG"
-          echo "=========================================="
-
-          # WALT MUST be enabled.
-          grep -q '^CONFIG_SCHED_WALT=y$' out/.config
-
-          # KernelSU MUST be enabled.
-          grep -q '^CONFIG_KSU=y$' out/.config
-
-          # OverlayFS MUST be enabled.
-          grep -q '^CONFIG_OVERLAY_FS=y$' out/.config
-
-          # VDSO32 MUST be disabled.
-          if grep -q '^CONFIG_VDSO32=y$' out/.config; then
-            echo "ERROR: CONFIG_VDSO32 is still enabled."
-            exit 1
-          fi
-
-          # COMPAT_VDSO MUST be disabled.
-          if grep -q '^CONFIG_COMPAT_VDSO=y$' out/.config; then
-            echo "ERROR: CONFIG_COMPAT_VDSO is still enabled."
-            exit 1
-          fi
-
-          echo "Required configuration verified."
+          grep -n "kernelsu" drivers/Makefile || true
+          grep -n "drivers/kernelsu" drivers/Kconfig || true
 
 
       # ============================================================
@@ -442,27 +406,126 @@ jobs:
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang
 
-          CLANG_BIN="$(
+          CLANG_BIN=$(
             find "$GITHUB_WORKSPACE/clang" \
               -type f \
               -path '*/bin/clang' \
-              -printf '%h\n' |
-            sort |
-            tail -1
-          )"
+              -printf '%h\n' \
+              | sort \
+              | tail -1
+          )
 
-          test -n "$CLANG_BIN"
+          if [ -z "$CLANG_BIN" ]; then
+            echo "ERROR: clang binary not found."
+            exit 1
+          fi
+
           test -x "$CLANG_BIN/clang"
 
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
           echo "=========================================="
-          echo "CLANG TOOLCHAIN"
+          echo "CLANG"
           echo "=========================================="
 
           "$CLANG_BIN/clang" --version
           "$CLANG_BIN/ld.lld" --version
+
+
+      # ============================================================
+      # PREPARE CONFIG
+      # ============================================================
+      - name: Prepare kernel configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd kernel
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          echo "=========================================="
+          echo "PREPARE CONFIG"
+          echo "=========================================="
+
+          rm -rf out
+          mkdir -p out
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            custom_x00qd_defconfig
+
+          test -f out/.config
+
+          echo "=========================================="
+          echo "KERNELSU CONFIG"
+          echo "=========================================="
+
+          ./scripts/config \
+            --file out/.config \
+            --enable KSU
+
+          ./scripts/config \
+            --file out/.config \
+            --enable OVERLAY_FS
+
+          echo "=========================================="
+          echo "COMPAT CONFIG"
+          echo "=========================================="
+
+          # Keep ARM64 compatibility unless the original
+          # configuration explicitly requires it disabled.
+          #
+          # The previous workflow disabled COMPAT/VDSO32 here,
+          # which could break an old Qualcomm Android kernel.
+          #
+          # Therefore do NOT forcibly disable COMPAT.
+
+          ./scripts/config \
+            --file out/.config \
+            --disable VDSO32
+
+          ./scripts/config \
+            --disable COMPAT_VDSO
+
+          echo "=========================================="
+          echo "MODULE SIGNING"
+          echo "=========================================="
+
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_TRUSTED_KEYS ""
+
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_REVOCATION_KEYS ""
+
+          ./scripts/config \
+            --disable MODULE_SIG
+
+          echo "=========================================="
+          echo "OLDDEFCONFIG"
+          echo "=========================================="
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            olddefconfig
+
+          test -f out/.config
+
+          echo "=========================================="
+          echo "FINAL CONFIG"
+          echo "=========================================="
+
+          grep -E \
+            '^(CONFIG_(SCHED_WALT|SCHED_FREQ_INPUT|COMPAT|COMPAT_VDSO|VDSO32|KSU|OVERLAY_FS|MODULE_SIG))=' \
+            out/.config || true
 
 
       # ============================================================
@@ -502,32 +565,12 @@ jobs:
           clang --version
           ld.lld --version
 
-          echo
-          echo "AArch64 GCC:"
-          aarch64-linux-gnu-gcc --version
-
-          echo
-          echo "ARM32 GCC:"
-          arm-linux-gnueabi-gcc --version
-
-          echo
-          echo "=========================================="
-          echo "FINAL CONFIG CHECK"
-          echo "=========================================="
-
-          test -f out/.config
-
-          grep -E \
-            '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_KSU|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=' \
-            out/.config || true
-
-          echo
           echo "=========================================="
           echo "BUILD KERNEL"
           echo "=========================================="
 
-          # GitHub-hosted runners have limited resources.
-          # Keep parallelism conservative.
+          # GitHub runner has limited memory.
+          # Keep jobs low to avoid LLVM Broken pipe / OOM failures.
           JOBS=2
 
           echo "Parallel jobs: $JOBS"
@@ -552,15 +595,9 @@ jobs:
             KCFLAGS="-Wno-error" \
             Image.gz
 
-          echo
-          echo "=========================================="
-          echo "BUILD COMPLETE"
-          echo "=========================================="
-
           test -f out/arch/arm64/boot/Image.gz
 
-          ls -lh \
-            out/arch/arm64/boot/Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz
 
 
       # ============================================================
@@ -575,56 +612,47 @@ jobs:
 
           test -f out/arch/arm64/boot/Image.gz
 
-          echo "Kernel:"
-          ls -lh out/arch/arm64/boot/Image.gz
+          echo "=========================================="
+          echo "KERNEL OUTPUT"
+          echo "=========================================="
 
-          echo "SHA256:"
-          sha256sum out/arch/arm64/boot/Image.gz
+          ls -lh \
+            out/arch/arm64/boot/Image.gz
+
+          file \
+            out/arch/arm64/boot/Image.gz
 
 
       # ============================================================
-      # UNPACK ORIGINAL BOOT
+      # REPACK BOOT IMAGE
       # ============================================================
-      - name: Unpack original boot image
+      - name: Repack boot image
         shell: bash
         run: |
           set -euxo pipefail
+
+          echo "=========================================="
+          echo "REPACK BOOT"
+          echo "=========================================="
+
+          test -f boot.img
 
           rm -rf workdir
           mkdir -p workdir
 
-          cp boot.img workdir/boot.img
+          cp boot.img workdir/original-boot.img
 
           cd workdir
 
+          echo "Unpacking original boot image..."
+
+          magiskboot unpack original-boot.img
+
           echo "=========================================="
-          echo "UNPACK ORIGINAL BOOT"
+          echo "BOOT COMPONENTS"
           echo "=========================================="
 
-          magiskboot unpack -h boot.img
-
-          test -f kernel || true
-
-          echo
-          echo "BOOT COMPONENTS:"
           ls -lah
-
-          echo
-          echo "HEADER:"
-          if [ -f header ]; then
-            cat header
-          fi
-
-
-      # ============================================================
-      # REPLACE KERNEL
-      # ============================================================
-      - name: Replace kernel in boot image
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd workdir
 
           KOUT="../kernel/out/arch/arm64/boot"
 
@@ -634,102 +662,48 @@ jobs:
           echo "REPLACE KERNEL"
           echo "=========================================="
 
-          # Backup original kernel for diagnostics.
-          if [ -f kernel ]; then
-            cp kernel original_kernel
-          fi
-
-          if [ -f kernel_dtb ]; then
-
-            echo "Original boot contains kernel_dtb."
-
-            cat \
-              "$KOUT/Image.gz" \
-              kernel_dtb \
-              > kernel
-
-          else
-
-            echo "No separate kernel_dtb."
-
-            cp \
-              "$KOUT/Image.gz" \
-              kernel
-
-          fi
+          # MagiskBoot automatically detects the original
+          # kernel compression when repacking.
+          #
+          # Image.gz is used for this kernel tree.
+          cp "$KOUT/Image.gz" kernel
 
           test -f kernel
 
           echo "New kernel:"
           ls -lh kernel
 
-          echo
-          echo "Kernel file:"
-          file kernel
-
-
-      # ============================================================
-      # REPACK BOOT
-      # ============================================================
-      - name: Repack boot image
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd workdir
-
           echo "=========================================="
-          echo "REPACK BOOT"
+          echo "REPACK"
           echo "=========================================="
-
-          rm -f new-boot.img
 
           magiskboot repack \
-            boot.img \
+            original-boot.img \
             new-boot.img
 
           test -f new-boot.img
-
-          echo "New boot image:"
-          ls -lh new-boot.img
-
-          file new-boot.img
 
           cp \
             new-boot.img \
             ../boot_ksu.img
 
+          echo "Created:"
+          ls -lh ../boot_ksu.img
+
 
       # ============================================================
-      # VERIFY REPACKED BOOT
+      # VERIFY BOOT IMAGE
       # ============================================================
-      - name: Verify repacked boot
+      - name: Verify boot image
         shell: bash
         run: |
           set -euxo pipefail
 
+          test -f boot.img
           test -f boot_ksu.img
 
           echo "=========================================="
-          echo "VERIFY BOOT IMAGE"
-          echo "=========================================="
-
-          magiskboot verify boot_ksu.img || true
-
-          file boot_ksu.img
-          ls -lh boot_ksu.img
-
-
-      # ============================================================
-      # MATCH ORIGINAL BOOT SIZE
-      # ============================================================
-      - name: Normalize boot image size
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "BOOT SIZE"
+          echo "BOOT IMAGE"
           echo "=========================================="
 
           ORIGINAL=$(stat -c%s boot.img)
@@ -739,67 +713,26 @@ jobs:
           echo "New:      $NEW bytes"
 
           if [ "$NEW" -gt "$ORIGINAL" ]; then
-            echo
             echo "WARNING: New boot image is larger than original."
-            echo "This is not automatically a kernel build failure."
-            echo
-            echo "The repacked image will be kept as-is."
+            echo "Do not automatically pad/truncate it."
+            echo "The repacked image must remain structurally valid."
           fi
 
-          if [ "$NEW" -lt "$ORIGINAL" ]; then
-
-            PAD=$((ORIGINAL - NEW))
-
-            echo "Padding: $PAD bytes"
-
-            truncate \
-              -s "$ORIGINAL" \
-              boot_ksu.img
-
-          fi
-
-          FINAL=$(stat -c%s boot_ksu.img)
-
-          echo
-          echo "Final:    $FINAL bytes"
-          echo "Original: $ORIGINAL bytes"
-
-          ls -lh boot_ksu.img
-
-          sha256sum boot_ksu.img
-
-
-      # ============================================================
-      # FINAL CHECK
-      # ============================================================
-      - name: Final artifact check
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          test -f boot_ksu.img
-          test -s boot_ksu.img
-
           echo "=========================================="
-          echo "FINAL ARTIFACT"
+          echo "MAGISKBOOT VERIFY"
           echo "=========================================="
 
+          magiskboot verify boot_ksu.img || true
+
           ls -lh boot_ksu.img
-
-          file boot_ksu.img
-
-          echo
-          echo "SHA256:"
-          sha256sum boot_ksu.img
 
 
       # ============================================================
       # ARTIFACT
       # ============================================================
-      - name: Upload KernelSU boot image
+      - name: Upload boot image
         uses: actions/upload-artifact@v4
         with:
           name: boot_ksu_X00QD_KernelSU
           path: boot_ksu.img
           if-no-files-found: error
-          retention-days: 30
