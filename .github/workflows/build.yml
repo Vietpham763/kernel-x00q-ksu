@@ -11,16 +11,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+
       # ============================================================
-      # 1. Checkout
+      # CHECKOUT
       # ============================================================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Dependencies
+      # DEPENDENCIES
       # ============================================================
-      - name: Install build dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -eux
@@ -33,8 +34,6 @@ jobs:
             build-essential \
             cpio \
             flex \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
             git \
             libelf-dev \
             libncurses5-dev \
@@ -45,50 +44,12 @@ jobs:
             unzip \
             wget \
             zip \
-            device-tree-compiler
+            device-tree-compiler \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
 
       # ============================================================
-      # 3. Get boot.img from boot.zip
-      # ============================================================
-      - name: Extract original boot image
-        shell: bash
-        run: |
-          set -eux
-
-          test -f boot.zip
-
-          unzip -o boot.zip
-
-          if [ ! -f boot.img ]; then
-            echo "ERROR: boot.img was not found"
-            find . -maxdepth 3 -type f | sort
-            exit 1
-          fi
-
-          ls -lh boot.img
-
-      # ============================================================
-      # 4. Clone kernel source
-      # ============================================================
-      - name: Clone SDM660 kernel source
-        shell: bash
-        run: |
-          set -eux
-
-          rm -rf kernel
-
-          git clone \
-            --depth=1 \
-            --branch lineage-18.1 \
-            https://github.com/LineageOS/android_kernel_asus_sdm660 \
-            kernel
-
-          cd kernel
-
-          git rev-parse HEAD
-
-      # ============================================================
-      # 5. Download Android clang
+      # CLANG
       # ============================================================
       - name: Download Android Clang
         shell: bash
@@ -115,10 +76,54 @@ jobs:
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
+          echo "=========================================="
+          echo "CLANG"
+          echo "=========================================="
+
           "$CLANG_BIN/clang" --version
 
       # ============================================================
-      # 6. Integrate KernelSU
+      # LLVM TOOLS
+      # ============================================================
+      - name: Check LLVM tools
+        shell: bash
+        run: |
+          set -eux
+
+          test -x "$CLANG_BIN/clang"
+          test -x "$CLANG_BIN/ld.lld"
+          test -x "$CLANG_BIN/llvm-ar"
+          test -x "$CLANG_BIN/llvm-nm"
+          test -x "$CLANG_BIN/llvm-objcopy"
+          test -x "$CLANG_BIN/llvm-objdump"
+          test -x "$CLANG_BIN/llvm-readelf"
+          test -x "$CLANG_BIN/llvm-strip"
+
+          echo "LLVM toolchain OK"
+
+      # ============================================================
+      # KERNEL SOURCE
+      # ============================================================
+      - name: Prepare kernel source
+        shell: bash
+        run: |
+          set -eux
+
+          cd "$GITHUB_WORKSPACE"
+
+          if [ ! -d kernel ]; then
+            git clone \
+              --depth=1 \
+              https://github.com/LineageOS/android_kernel_asus_sdm660 \
+              kernel
+          fi
+
+          cd kernel
+
+          git rev-parse HEAD
+
+      # ============================================================
+      # KERNELSU
       # ============================================================
       - name: Integrate KernelSU
         shell: bash
@@ -134,53 +139,63 @@ jobs:
             https://github.com/tiann/KernelSU.git \
             KernelSU
 
+          test -f KernelSU/kernel/setup.sh
+
           bash KernelSU/kernel/setup.sh
 
           echo "KernelSU integration completed"
 
-          test -d KernelSU/kernel
-
       # ============================================================
-      # 7. Prepare clean output directory
+      # CONFIG
       # ============================================================
-      - name: Prepare kernel configuration
+      - name: Configure kernel
         shell: bash
         run: |
           set -eux
 
           cd "$GITHUB_WORKSPACE/kernel"
 
-          rm -rf out
-          mkdir -p out
-
           export ARCH=arm64
           export SUBARCH=arm64
 
-          make O=out \
-            ARCH=arm64 \
-            sdm660_defconfig
+          rm -rf out
+          mkdir -p out
 
-          # Enable required KernelSU-related options where available.
-          if [ -x scripts/config ]; then
-            scripts/config \
-              --file out/.config \
-              --enable CONFIG_KSU \
-              --enable CONFIG_OVERLAY_FS || true
+          echo "=========================================="
+          echo "DEFCONFIG"
+          echo "=========================================="
+
+          if make O=out ARCH=arm64 custom_x00qd_defconfig; then
+            echo "Using custom_x00qd_defconfig"
+          else
+            echo "custom_x00qd_defconfig not available"
+            echo "Using sdm660_defconfig"
+
+            rm -rf out
+            mkdir -p out
+
+            make O=out ARCH=arm64 sdm660_defconfig
           fi
 
-          make O=out \
+          test -f out/.config
+
+          make \
+            O=out \
             ARCH=arm64 \
             olddefconfig
 
           test -f out/.config
 
-          echo "Kernel configuration:"
+          echo "=========================================="
+          echo "KERNELSU CONFIG"
+          echo "=========================================="
+
           grep -E \
-            'CONFIG_KSU=|CONFIG_OVERLAY_FS=|CONFIG_KPROBES=|CONFIG_COMPAT=' \
+            'CONFIG_KSU|CONFIG_OVERLAY_FS|CONFIG_KPROBES' \
             out/.config || true
 
       # ============================================================
-      # 8. Build kernel
+      # BUILD
       # ============================================================
       - name: Build kernel
         shell: bash
@@ -195,26 +210,33 @@ jobs:
           export PATH="$CLANG_BIN:$PATH"
 
           export CC=clang
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export STRIP=llvm-strip
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
 
           echo "=========================================="
-          echo "COMPILER"
+          echo "TOOLCHAIN"
           echo "=========================================="
 
           clang --version
-          aarch64-linux-gnu-gcc --version | head -1
+          ld.lld --version
+          llvm-objdump --version
+          llvm-readelf --version
 
           echo "=========================================="
-          echo "BUILD"
+          echo "BUILD KERNEL"
           echo "=========================================="
 
           make \
             -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 \
+            LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="-Wno-error" \
@@ -222,17 +244,21 @@ jobs:
             dtbs
 
           echo "=========================================="
-          echo "BUILD OUTPUT"
+          echo "BUILD RESULT"
           echo "=========================================="
 
-          find out/arch/arm64/boot \
-            -maxdepth 3 \
+          test -f out/arch/arm64/boot/Image.gz
+
+          ls -lh \
+            out/arch/arm64/boot/Image.gz
+
+          find out/arch/arm64/boot/dts \
             -type f \
-            -printf '%p %s bytes\n' \
-            | sort
+            \( -name "*.dtb" -o -name "*.dtbo" \) \
+            -print 2>/dev/null || true
 
       # ============================================================
-      # 9. Prepare MagiskBoot
+      # MAGISKBOOT
       # ============================================================
       - name: Prepare MagiskBoot
         shell: bash
@@ -251,7 +277,8 @@ jobs:
             'lib/x86_64/libmagiskboot.so' \
             -d magisk_extract
 
-          test -f magisk_extract/lib/x86_64/libmagiskboot.so
+          test -f \
+            magisk_extract/lib/x86_64/libmagiskboot.so
 
           cp \
             magisk_extract/lib/x86_64/libmagiskboot.so \
@@ -259,61 +286,86 @@ jobs:
 
           chmod +x magiskboot
 
+          echo "=========================================="
+          echo "MAGISKBOOT"
+          echo "=========================================="
+
           ./magiskboot version || true
 
       # ============================================================
-      # 10. Unpack original boot.img
+      # BOOT IMAGE
+      # ============================================================
+      - name: Prepare boot image
+        shell: bash
+        run: |
+          set -eux
+
+          test -f boot.zip
+
+          rm -rf boot_work
+          mkdir -p boot_work
+
+          unzip -o boot.zip -d boot_work
+
+          BOOT_IMG="$(find boot_work \
+            -maxdepth 3 \
+            -type f \
+            -name 'boot.img' \
+            | head -1)"
+
+          test -n "$BOOT_IMG"
+
+          cp "$BOOT_IMG" boot_work/original-boot.img
+
+          ls -lh boot_work/original-boot.img
+
+      # ============================================================
+      # UNPACK
       # ============================================================
       - name: Unpack boot image
         shell: bash
         run: |
           set -eux
 
-          rm -rf boot_work
-          mkdir -p boot_work
+          cd "$GITHUB_WORKSPACE/boot_work"
 
-          cp boot.img boot_work/original-boot.img
+          "$GITHUB_WORKSPACE/magiskboot" \
+            unpack \
+            -h \
+            original-boot.img
 
-          cd boot_work
+          echo "=========================================="
+          echo "BOOT COMPONENTS"
+          echo "=========================================="
 
-          ../../magiskboot unpack -h original-boot.img
-
-          echo "Boot image components:"
           ls -lah
 
           test -f kernel
 
       # ============================================================
-      # 11. Replace kernel only
+      # REPLACE KERNEL
       # ============================================================
-      - name: Replace kernel
+      - name: Replace boot kernel
         shell: bash
         run: |
           set -eux
 
-          KERNEL_DIR="$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot"
-          WORK_DIR="$GITHUB_WORKSPACE/boot_work"
+          cd "$GITHUB_WORKSPACE/boot_work"
 
-          test -f "$KERNEL_DIR/Image.gz"
-
-          cd "$WORK_DIR"
+          test -f kernel
+          test -f \
+            "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz"
 
           cp kernel kernel.stock
 
-          cp "$KERNEL_DIR/Image.gz" kernel.gz
+          cp \
+            "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz" \
+            kernel
 
-          # Preserve the original DTB when boot.img contains one.
-          if [ -f kernel_dtb ]; then
-            cat kernel.gz kernel_dtb > kernel.new
-            mv kernel.new kernel
-          else
-            cp kernel.gz kernel
-          fi
-
-          ls -lh kernel
+          ls -lh kernel kernel.stock
 
       # ============================================================
-      # 12. Repack boot image
+      # REPACK
       # ============================================================
       - name: Repack boot image
         shell: bash
@@ -322,7 +374,8 @@ jobs:
 
           cd "$GITHUB_WORKSPACE/boot_work"
 
-          ./../magiskboot repack \
+          "$GITHUB_WORKSPACE/magiskboot" \
+            repack \
             original-boot.img \
             new-boot.img
 
@@ -333,35 +386,45 @@ jobs:
             new-boot.img
 
       # ============================================================
-      # 13. Validate result
+      # VERIFY
       # ============================================================
-      - name: Validate boot image
+      - name: Verify boot image
         shell: bash
         run: |
           set -eux
 
           cd "$GITHUB_WORKSPACE/boot_work"
 
-          ../magiskboot verify new-boot.img || true
+          "$GITHUB_WORKSPACE/magiskboot" \
+            verify \
+            new-boot.img || true
 
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+      # ============================================================
+      # ARTIFACTS
+      # ============================================================
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          set -eux
 
-          cp \
-            new-boot.img \
-            "$GITHUB_WORKSPACE/artifacts/boot_ksu.img"
+          rm -rf artifacts
+          mkdir -p artifacts
 
           cp \
             "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz" \
-            "$GITHUB_WORKSPACE/artifacts/Image.gz"
+            artifacts/Image.gz
 
-          find "$GITHUB_WORKSPACE/artifacts" \
-            -type f \
-            -printf '%f %s bytes\n'
+          cp \
+            "$GITHUB_WORKSPACE/boot_work/new-boot.img" \
+            artifacts/boot_ksu.img
 
-      # ============================================================
-      # 14. Upload artifacts
-      # ============================================================
-      - name: Upload kernel artifacts
+          echo "=========================================="
+          echo "ARTIFACTS"
+          echo "=========================================="
+
+          ls -lh artifacts
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ZE620KL-crDroid-9.5-KernelSU
