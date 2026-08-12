@@ -38,22 +38,20 @@ jobs:
             exit 1
           fi
 
-          # Tải script extract-ikconfig
           wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig -O extract-ikconfig
           chmod +x extract-ikconfig
 
-          # Trích xuất config gốc từ boot.img
           ./extract-ikconfig boot.img > kernel_config_goc || true
 
           if [ -s kernel_config_goc ]; then
             echo "Đã trích xuất thành công ikconfig từ boot.img gốc!"
             cp kernel_config_goc kernel/arch/arm64/configs/custom_x00qd_defconfig
           else
-            echo "boot.img gốc không chứa ikconfig, sẽ dùng sdm660_defconfig chuẩn."
+            echo "boot.img gốc không chứa ikconfig, dùng sdm660_defconfig."
             cp kernel/arch/arm64/configs/sdm660_defconfig kernel/arch/arm64/configs/custom_x00qd_defconfig
           fi
 
-      - name: Tích hợp KernelSU Next & Patch Hiding Verified Boot (Play Integrity)
+      - name: Tích hợp KernelSU Next & Tắt OpenSSL Cert Signing
         run: |
           cd kernel
           # Tích hợp KernelSU Next
@@ -73,6 +71,12 @@ jobs:
           echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/custom_x00qd_defconfig
           echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/custom_x00qd_defconfig
 
+          # Tắt Module / System Cert Signing gây lỗi OpenSSL 3.0 extract-cert.c
+          echo "CONFIG_SYSTEM_TRUSTED_KEYS=\"\"" >> arch/arm64/configs/custom_x00qd_defconfig
+          echo "CONFIG_SYSTEM_REVOCATION_KEYS=\"\"" >> arch/arm64/configs/custom_x00qd_defconfig
+          echo "# CONFIG_MODULE_SIG is not set" >> arch/arm64/configs/custom_x00qd_defconfig
+          echo "# CONFIG_SYSTEM_TRUSTED_KEYRING is not set" >> arch/arm64/configs/custom_x00qd_defconfig
+
       - name: Tải Toolchain Proton Clang
         run: |
           git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
@@ -84,7 +88,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           make O=out custom_x00qd_defconfig
-          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration" KCPPFLAGS="-Wno-error" Image.gz dtbs
+          make -j$(nproc) O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-deprecated-declarations" KCPPFLAGS="-Wno-error -Wno-deprecated-declarations" Image.gz dtbs
 
       - name: Unpack & Repack boot.img Chuẩn 32MB
         run: |
@@ -95,21 +99,18 @@ jobs:
           cp boot.img workdir/
           cd workdir
 
-          # Unpack boot.img gốc
           magiskboot unpack boot.img
 
           KOUT="../kernel/out/arch/arm64/boot"
 
-          # Sử dụng Image.gz nén
           if [ -f "$KOUT/Image.gz" ]; then
             cp "$KOUT/Image.gz" kernel.gz
           else
             gzip -9 -n -c "$KOUT/Image" > kernel.gz
           fi
 
-          # Ưu tiên giữ lại kernel_dtb gốc của ROM Android 13 để không lỗi màn hình
           if [ -f "kernel_dtb" ]; then
-            echo "Sử dụng kernel_dtb gốc từ ROM để tránh treo logo..."
+            echo "Sử dụng kernel_dtb gốc từ ROM..."
             cat kernel.gz kernel_dtb > kernel
           elif [ -d "$KOUT/dts/qcom" ]; then
             cat kernel.gz $KOUT/dts/qcom/*.dtb > kernel 2>/dev/null || cp kernel.gz kernel
@@ -120,7 +121,6 @@ jobs:
           K_SIZE=$(stat -c%s "kernel")
           echo "Kích thước Kernel chuẩn bị nạp: $K_SIZE bytes"
 
-          # Repack
           magiskboot repack boot.img new-boot.img
 
           NEW_SIZE=$(stat -c%s "new-boot.img")
@@ -131,7 +131,6 @@ jobs:
             exit 1
           fi
 
-          # Padding khớp 100% từng byte với dung lượng 32MB
           cp new-boot.img ../boot_ksu.img
           PAD_BYTES=$((ORIG_SIZE - NEW_SIZE))
           if [ $PAD_BYTES -gt 0 ]; then
