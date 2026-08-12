@@ -1,4 +1,4 @@
-name: Build KernelSU + Play Integrity Patch for Zenfone 5
+name: Build ZE620KL crDroid 9.5 KernelSU
 
 on:
   workflow_dispatch:
@@ -7,148 +7,473 @@ jobs:
   build:
     runs-on: ubuntu-22.04
 
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KERNEL_REPO: https://github.com/LineageOS/android_kernel_asus_sdm660.git
+      KERNEL_BRANCH: lineage-18.1
+      KSU_VERSION: v0.9.5
+
     steps:
-      - name: Checkout Repository
+
+      # ============================================================
+      # 1. Checkout repository
+      # ============================================================
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cài đặt công cụ biên dịch & Magiskboot
+      # ============================================================
+      # 2. Dependencies
+      # ============================================================
+      - name: Install dependencies
         run: |
+          set -e
+
           sudo apt-get update
-          sudo apt-get install -y build-essential bc bison flex libssl-dev libncurses5-dev git zip libarchive-tools gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-linux-gnueabi g++-arm-linux-gnueabi device-tree-compiler
-          
-          # Tải Magisk APK chính chủ để trích xuất magiskboot chuẩn
-          wget https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
-          unzip Magisk-v27.0.apk "lib/x86_64/libmagiskboot.so" -d .
-          mv lib/x86_64/libmagiskboot.so magiskboot
-          chmod +x magiskboot
-          sudo mv magiskboot /usr/local/bin/
 
-      - name: Clone Nguồn Kernel X00QD (Nhánh SDM660 Lineage-18.1)
-        run: |
-          git clone https://github.com/LineageOS/android_kernel_asus_sdm660 -b lineage-18.1 --depth=1 kernel
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            flex \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            git \
+            libelf-dev \
+            libncurses5-dev \
+            libssl-dev \
+            device-tree-compiler \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            xz-utils
 
-      - name: Trích xuất Kernel Config (ikconfig) từ boot.img gốc
+      # ============================================================
+      # 3. Get boot.img from boot.zip
+      # ============================================================
+      - name: Extract crDroid boot.img
         run: |
-          if [ -f boot.zip ]; then
-            unzip -o boot.zip
+          set -e
+
+          if [ ! -f boot.zip ]; then
+            echo "ERROR: boot.zip not found"
+            exit 1
           fi
+
+          unzip -o boot.zip
 
           if [ ! -f boot.img ]; then
-            echo "LỖI: Không tìm thấy boot.img trong repository!"
+            echo "ERROR: boot.img not found"
             exit 1
           fi
 
-          # Dùng trực tiếp extract-ikconfig từ repo kernel vừa clone
-          chmod +x kernel/scripts/extract-ikconfig
+          mkdir -p original
 
-          kernel/scripts/extract-ikconfig boot.img > kernel_config_goc || true
+          cp boot.img original/boot.img
 
-          if [ -s kernel_config_goc ]; then
-            echo "Đã trích xuất thành công ikconfig từ boot.img gốc!"
-            cp kernel_config_goc kernel/arch/arm64/configs/custom_x00qd_defconfig
-          else
-            echo "boot.img gốc không chứa ikconfig, dùng sdm660_defconfig chuẩn."
-            cp kernel/arch/arm64/configs/sdm660_defconfig kernel/arch/arm64/configs/custom_x00qd_defconfig
+          echo "Original boot.img:"
+          ls -lh original/boot.img
+
+      # ============================================================
+      # 4. MagiskBoot
+      # ============================================================
+      - name: Install MagiskBoot
+        run: |
+          set -e
+
+          wget -O Magisk.apk \
+            https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+
+          unzip -o Magisk.apk \
+            "lib/x86_64/libmagiskboot.so" \
+            -d magisk_extract
+
+          cp \
+            magisk_extract/lib/x86_64/libmagiskboot.so \
+            magiskboot
+
+          chmod +x magiskboot
+
+          ./magiskboot --help >/dev/null
+
+      # ============================================================
+      # 5. Unpack original boot
+      # ============================================================
+      - name: Unpack original boot
+        run: |
+          set -e
+
+          mkdir -p boot_work
+
+          cp original/boot.img boot_work/boot.img
+
+          cd boot_work
+
+          ../../magiskboot unpack boot.img
+
+          echo "======================================"
+          echo "Original boot.img structure"
+          echo "======================================"
+
+          ls -lah
+
+          echo ""
+          echo "Kernel:"
+          file kernel || true
+
+          echo ""
+          echo "Kernel DTB:"
+          file kernel_dtb || true
+
+          echo ""
+          echo "Ramdisk:"
+          file ramdisk.cpio* || true
+
+      # ============================================================
+      # 6. Clone kernel
+      # ============================================================
+      - name: Clone SDM660 kernel
+        run: |
+          set -e
+
+          git clone \
+            --depth=1 \
+            -b "${KERNEL_BRANCH}" \
+            "${KERNEL_REPO}" \
+            kernel
+
+          cd kernel
+
+          echo "======================================"
+          echo "Kernel source"
+          echo "======================================"
+
+          git log -1 --oneline
+
+          echo ""
+          echo "Kernel version:"
+          make kernelversion
+
+      # ============================================================
+      # 7. Show available defconfig
+      # ============================================================
+      - name: Find defconfig
+        run: |
+          set -e
+
+          cd kernel
+
+          echo "Available relevant defconfigs:"
+
+          find arch/arm64/configs \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | grep -Ei \
+              'sdm660|x00|asus' \
+            | sort || true
+
+      # ============================================================
+      # 8. Integrate KernelSU
+      # ============================================================
+      - name: Integrate KernelSU
+        run: |
+          set -e
+
+          cd kernel
+
+          curl -LSs \
+            "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
+            | bash -s "${KSU_VERSION}"
+
+          if [ ! -d KernelSU ]; then
+            echo "ERROR: KernelSU integration failed"
+            exit 1
           fi
 
-      - name: Tích hợp KernelSU Next & Cấu hình Tắt VDSO32
+          echo "KernelSU ${KSU_VERSION} integrated."
+
+      # ============================================================
+      # 9. Configure kernel
+      # ============================================================
+      - name: Configure kernel
         run: |
+          set -e
+
           cd kernel
-          # Tích hợp KernelSU Next
-          git clone https://github.com/KernelSU-Next/KernelSU-Next KSU --depth=1
-          cp -r KSU/kernel drivers/kernelsu
-          rm -rf KSU
-          echo "obj-y += kernelsu/" >> drivers/Makefile
-          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
-          # Forward declare struct fix
-          echo -e "\nstruct mdss_dsi_ctrl_pdata;\nstruct dsi_panel_cmds;\nvoid mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl, struct dsi_panel_cmds *pcmds, u32 flags) {}\n" >> drivers/video/fbdev/msm/mdss_livedisplay.c
+          mkdir -p out
 
-          # Bổ sung KernelSU & Play Integrity Config
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "CONFIG_KPROBES=y" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "CONFIG_OVERLAY_FS=y" >> arch/arm64/configs/custom_x00qd_defconfig
+          if [ -f arch/arm64/configs/x00qd_defconfig ]; then
+            DEFCONFIG=x00qd_defconfig
 
-          # Tắt Module / System Cert Signing (Fix OpenSSL 3.0)
-          echo "CONFIG_SYSTEM_TRUSTED_KEYS=\"\"" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "CONFIG_SYSTEM_REVOCATION_KEYS=\"\"" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "# CONFIG_MODULE_SIG is not set" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "# CONFIG_SYSTEM_TRUSTED_KEYRING is not set" >> arch/arm64/configs/custom_x00qd_defconfig
+          elif [ -f arch/arm64/configs/sdm660_defconfig ]; then
+            DEFCONFIG=sdm660_defconfig
 
-          # TẮT VDSO32 DỨT ĐIỂM LỖI ASSEMBLER (-EL)
-          echo "# CONFIG_VDSO32 is not set" >> arch/arm64/configs/custom_x00qd_defconfig
-          echo "# CONFIG_COMPAT_VDSO is not set" >> arch/arm64/configs/custom_x00qd_defconfig
+          elif [ -f arch/arm64/configs/vendor/sdm660_defconfig ]; then
+            DEFCONFIG=vendor/sdm660_defconfig
 
-      - name: Tải Toolchain Proton Clang
+          else
+            echo "ERROR: No suitable SDM660/X00QD defconfig found"
+            exit 1
+          fi
+
+          echo "Using:"
+          echo "${DEFCONFIG}"
+
+          make O=out "${DEFCONFIG}"
+
+          # KernelSU
+          ./scripts/config \
+            --file out/.config \
+            --enable CONFIG_KSU
+
+          # OverlayFS
+          ./scripts/config \
+            --file out/.config \
+            --enable CONFIG_OVERLAY_FS
+
+          # Disable module signing
+          ./scripts/config \
+            --file out/.config \
+            --disable CONFIG_MODULE_SIG
+
+          ./scripts/config \
+            --disable CONFIG_MODULE_SIG_FORCE
+
+          ./scripts/config \
+            --disable CONFIG_SYSTEM_TRUSTED_KEYRING
+
+          ./scripts/config \
+            --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
+
+          ./scripts/config \
+            --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
+
+          # Old Android 4.4 ARM64 compatibility
+          ./scripts/config \
+            --disable CONFIG_VDSO32
+
+          ./scripts/config \
+            --disable CONFIG_COMPAT_VDSO
+
+          make O=out olddefconfig
+
+          echo ""
+          echo "KernelSU configuration:"
+          grep -E \
+            '^CONFIG_KSU=|^CONFIG_OVERLAY_FS=' \
+            out/.config || true
+
+      # ============================================================
+      # 10. Download Clang
+      # ============================================================
+      - name: Download Android Clang
         run: |
-          git clone https://github.com/kdrag0n/proton-clang --depth=1 clang
+          set -e
 
-      - name: Biên dịch Kernel không VDSO32
+          git clone \
+            --depth=1 \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            clang
+
+          echo "Available clang:"
+          find clang \
+            -type f \
+            -path '*/bin/clang' \
+            | sort
+
+      # ============================================================
+      # 11. Build kernel
+      # ============================================================
+      - name: Build kernel
         run: |
+          set -e
+
           cd kernel
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+
+          CLANG_BIN=$(
+            find "$GITHUB_WORKSPACE/clang" \
+              -type f \
+              -path '*/bin/clang' \
+              | sort \
+              | tail -1 \
+              | xargs dirname
+          )
+
+          if [ -z "${CLANG_BIN}" ]; then
+            echo "ERROR: Clang not found"
+            exit 1
+          fi
+
+          export PATH="${CLANG_BIN}:$PATH"
+
+          echo "======================================"
+          echo "Compiler"
+          echo "======================================"
+
+          clang --version
+
           export ARCH=arm64
           export SUBARCH=arm64
-          make O=out custom_x00qd_defconfig
-          make -j$(nproc) O=out \
+
+          make -j"$(nproc)" \
+            O=out \
+            ARCH=arm64 \
             CC=clang \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            KCFLAGS="-Wno-error -Wno-implicit-function-declaration -Wno-deprecated-declarations" \
-            KCPPFLAGS="-Wno-error -Wno-deprecated-declarations" \
-            Image.gz dtbs
+            KCFLAGS="-Wno-error" \
+            Image.gz
 
-      - name: Unpack & Repack boot.img Chuẩn 32MB
-        run: |
-          ORIG_SIZE=$(stat -c%s "boot.img")
-          echo "Kích thước boot.img gốc: $ORIG_SIZE bytes"
-
-          mkdir workdir
-          cp boot.img workdir/
-          cd workdir
-
-          magiskboot unpack boot.img
-
-          KOUT="../kernel/out/arch/arm64/boot"
-
-          if [ -f "$KOUT/Image.gz" ]; then
-            cp "$KOUT/Image.gz" kernel.gz
-          else
-            gzip -9 -n -c "$KOUT/Image" > kernel.gz
-          fi
-
-          if [ -f "kernel_dtb" ]; then
-            echo "Sử dụng kernel_dtb gốc từ ROM..."
-            cat kernel.gz kernel_dtb > kernel
-          elif [ -d "$KOUT/dts/qcom" ]; then
-            cat kernel.gz $KOUT/dts/qcom/*.dtb > kernel 2>/dev/null || cp kernel.gz kernel
-          else
-            cp kernel.gz kernel
-          fi
-
-          K_SIZE=$(stat -c%s "kernel")
-          echo "Kích thước Kernel chuẩn bị nạp: $K_SIZE bytes"
-
-          magiskboot repack boot.img new-boot.img
-
-          NEW_SIZE=$(stat -c%s "new-boot.img")
-          echo "Kích thước file mới repack: $NEW_SIZE bytes"
-
-          if [ $NEW_SIZE -gt $ORIG_SIZE ]; then
-            echo "LỖI: File mới ($NEW_SIZE) vượt quá dung lượng gốc ($ORIG_SIZE)!"
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "ERROR: Image.gz was not generated"
             exit 1
           fi
 
-          cp new-boot.img ../boot_ksu.img
-          PAD_BYTES=$((ORIG_SIZE - NEW_SIZE))
-          if [ $PAD_BYTES -gt 0 ]; then
-            dd if=/dev/zero bs=1 count=$PAD_BYTES >> ../boot_ksu.img
+          echo ""
+          echo "Kernel built successfully:"
+          ls -lh out/arch/arm64/boot/Image.gz
+
+      # ============================================================
+      # 12. Preserve original DTB
+      # ============================================================
+      - name: Prepare kernel + original DTB
+        run: |
+          set -e
+
+          NEW_KERNEL="kernel/out/arch/arm64/boot/Image.gz"
+
+          if [ ! -f "${NEW_KERNEL}" ]; then
+            echo "ERROR: Image.gz missing"
+            exit 1
           fi
 
-      - name: Tải file boot_ksu.img về
+          cd boot_work
+
+          cp kernel kernel.original
+
+          if [ -f kernel_dtb ]; then
+
+            echo "Original DTB detected."
+
+            cp kernel_dtb ../original_kernel_dtb
+
+            cat \
+              "${GITHUB_WORKSPACE}/${NEW_KERNEL}" \
+              kernel_dtb \
+              > kernel.new
+
+            mv kernel.new kernel
+
+          else
+
+            echo "No separate kernel_dtb detected."
+
+            cp \
+              "${GITHUB_WORKSPACE}/${NEW_KERNEL}" \
+              kernel
+
+          fi
+
+          echo ""
+          echo "Final kernel:"
+          stat -c "%s bytes" kernel
+
+      # ============================================================
+      # 13. Repack boot
+      # ============================================================
+      - name: Repack boot.img
+        run: |
+          set -e
+
+          cd boot_work
+
+          ../../magiskboot repack \
+            boot.img \
+            ../boot_ksu.img
+
+          if [ ! -f ../boot_ksu.img ]; then
+            echo "ERROR: boot_ksu.img not generated"
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "New boot.img"
+          echo "======================================"
+
+          ls -lh ../boot_ksu.img
+
+      # ============================================================
+      # 14. Validate generated boot
+      # ============================================================
+      - name: Validate boot image
+        run: |
+          set -e
+
+          rm -rf validation
+
+          mkdir validation
+
+          cp boot_ksu.img validation/
+
+          cd validation
+
+          ../magiskboot unpack boot_ksu.img
+
+          if [ ! -f kernel ]; then
+            echo "ERROR: repacked kernel cannot be unpacked"
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "Repacked boot validation OK"
+          echo "======================================"
+
+          ls -lah
+
+      # ============================================================
+      # 15. Save build information
+      # ============================================================
+      - name: Build information
+        run: |
+          set -e
+
+          {
+            echo "Device: ASUS Zenfone 5 ZE620KL / X00QD"
+            echo "ROM: crDroid 9.5 Android 13"
+            echo "Kernel source: ${KERNEL_REPO}"
+            echo "Kernel branch: ${KERNEL_BRANCH}"
+            echo "KernelSU: ${KSU_VERSION}"
+            echo ""
+            echo "Original boot:"
+            stat -c "%s bytes" original/boot.img
+            echo ""
+            echo "New boot:"
+            stat -c "%s bytes" boot_ksu.img
+            echo ""
+            echo "Kernel:"
+            stat -c "%s bytes" kernel/out/arch/arm64/boot/Image.gz
+          } > build-info.txt
+
+          cat build-info.txt
+
+      # ============================================================
+      # 16. Upload
+      # ============================================================
+      - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_X00QD_FixBootloop
+          name: ZE620KL-crDroid-9.5-KernelSU
           path: boot_ksu.img
+
+      - name: Upload build information
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZE620KL-build-info
+          path: |
+            build-info.txt
+            original_kernel_dtb
