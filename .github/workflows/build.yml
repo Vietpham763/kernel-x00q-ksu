@@ -11,20 +11,18 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-
       # ============================================================
       # CHECKOUT
       # ============================================================
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-
       # ============================================================
-      # BUILD DEPENDENCIES
+      # DEPENDENCIES
       # ============================================================
-      - name: Install build dependencies
+      - name: Install dependencies
         shell: bash
         run: |
           set -euxo pipefail
@@ -39,7 +37,6 @@ jobs:
             libssl-dev \
             libncurses5-dev \
             libelf-dev \
-            libdw-dev \
             cpio \
             rsync \
             unzip \
@@ -49,66 +46,157 @@ jobs:
             git \
             file \
             python3 \
-            python3-pip \
             device-tree-compiler \
             gcc-aarch64-linux-gnu \
             g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi \
             g++-arm-linux-gnueabi
 
-
       # ============================================================
-      # CHECK REPOSITORY
+      # DETECT KERNEL SOURCE
+      #
+      # IMPORTANT:
+      # Repo của bạn có thể:
+      #
+      #   kernel-x00q-ksu/
+      #       Makefile
+      #       arch/
+      #
+      # hoặc:
+      #
+      #   kernel-x00q-ksu/
+      #       kernel/
+      #           Makefile
+      #           arch/
+      #
+      # Không được hard-code cd kernel.
       # ============================================================
-      - name: Check repository
+      - name: Detect kernel source directory
         shell: bash
         run: |
           set -euxo pipefail
 
           echo "=========================================="
-          echo "REPOSITORY"
+          echo "DETECT KERNEL SOURCE"
           echo "=========================================="
 
-          if [ -d kernel ] && [ -f kernel/Makefile ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          elif [ -f Makefile ] && [ -d arch/arm64 ]; then
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo
+          echo "Workspace:"
+          pwd
+
+          echo
+          echo "Top-level files:"
+          find "$GITHUB_WORKSPACE" \
+            -maxdepth 2 \
+            -type f \
+            -name Makefile \
+            -print
+
+          KERNEL_DIR=""
+
+          # Case 1:
+          # Kernel source is repository root.
+          if [ -f "$GITHUB_WORKSPACE/Makefile" ] &&
+             [ -d "$GITHUB_WORKSPACE/arch/arm64" ]; then
+
             KERNEL_DIR="$GITHUB_WORKSPACE"
+
+          # Case 2:
+          # Kernel source is inside kernel/.
+          elif [ -f "$GITHUB_WORKSPACE/kernel/Makefile" ] &&
+               [ -d "$GITHUB_WORKSPACE/kernel/arch/arm64" ]; then
+
+            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
+
           else
+            echo
             echo "ERROR: Cannot locate kernel source."
             echo
-            echo "Workspace:"
-            pwd
-            find . -maxdepth 2 -name Makefile -print
+            echo "Makefiles:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 5 \
+              -type f \
+              -name Makefile \
+              -print
+
+            echo
+            echo "arch/arm64 directories:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 5 \
+              -type d \
+              -path "*/arch/arm64" \
+              -print
+
             exit 1
           fi
 
-          echo "Kernel directory: $KERNEL_DIR"
+          echo
+          echo "Kernel source:"
+          echo "$KERNEL_DIR"
 
           test -f "$KERNEL_DIR/Makefile"
           test -d "$KERNEL_DIR/arch/arm64"
 
+          echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
           cd "$KERNEL_DIR"
 
+          echo
           echo "Kernel commit:"
           git log -1 --oneline || true
 
-          echo "Kernel source:"
-          pwd
+          echo
+          echo "Kernel Makefile:"
+          ls -lh Makefile
 
-          echo "=========================================="
-          echo "DEFCONFIGS"
-          echo "=========================================="
+          echo
+          echo "Architecture:"
+          ls -ld arch/arm64
 
+          echo
+          echo "Defconfigs:"
           find arch/arm64/configs \
             -maxdepth 1 \
             -type f \
-            -printf '%f\n' |
+            -printf "%f\n" |
             sort |
             head -150
 
+      # ============================================================
+      # CLEAN SOURCE
+      #
+      # mrproper MUST happen before KernelSU is copied into tree.
+      # ============================================================
+      - name: Clean kernel source tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$KERNEL_DIR"
+
+          echo "=========================================="
+          echo "CLEAN KERNEL SOURCE"
+          echo "=========================================="
+
+          # Remove old external build directory.
+          rm -rf out
+
+          # Clean generated files.
+          make ARCH=arm64 mrproper
+
+          # Recreate external output directory.
+          mkdir -p out
+
+          test -f Makefile
+          test -d arch/arm64
+          test -d out
+
+          echo
+          echo "Kernel source cleaned successfully."
 
       # ============================================================
-      # FIND ORIGINAL BOOT IMAGE
+      # LOCATE BOOT IMAGE
       # ============================================================
       - name: Locate original boot image
         shell: bash
@@ -116,43 +204,62 @@ jobs:
           set -euxo pipefail
 
           echo "=========================================="
-          echo "SEARCH ORIGINAL BOOT IMAGE"
+          echo "LOCATE BOOT IMAGE"
           echo "=========================================="
 
-          if [ -f boot.img ]; then
-            echo "Found: ./boot.img"
+          BOOT_IMAGE=""
 
-          elif [ -f boot.zip ]; then
-            echo "Found: ./boot.zip"
+          if [ -f "$GITHUB_WORKSPACE/boot.img" ]; then
+            BOOT_IMAGE="$GITHUB_WORKSPACE/boot.img"
 
-            unzip -o boot.zip
+          elif [ -f "$KERNEL_DIR/boot.img" ]; then
+            BOOT_IMAGE="$KERNEL_DIR/boot.img"
 
-            if [ ! -f boot.img ]; then
-              echo "ERROR: boot.zip does not contain boot.img"
-              exit 1
-            fi
+          elif [ -f "$GITHUB_WORKSPACE/boot.zip" ]; then
 
-          else
-            echo "ERROR: boot.img or boot.zip not found"
+            rm -rf "$GITHUB_WORKSPACE/boot_extract"
+            mkdir -p "$GITHUB_WORKSPACE/boot_extract"
+
+            unzip -o \
+              "$GITHUB_WORKSPACE/boot.zip" \
+              -d "$GITHUB_WORKSPACE/boot_extract"
+
+            BOOT_IMAGE="$(
+              find "$GITHUB_WORKSPACE/boot_extract" \
+                -type f \
+                -name "boot.img" \
+                -print \
+                -quit
+            )"
+          fi
+
+          if [ -z "$BOOT_IMAGE" ] || [ ! -f "$BOOT_IMAGE" ]; then
+            echo "ERROR: boot.img not found."
+
             echo
-            echo "Files in repository:"
-            find . -maxdepth 4 -type f \
+            echo "Available image/zip files:"
+            find "$GITHUB_WORKSPACE" \
+              -maxdepth 6 \
+              -type f \
               \( -name "*.img" -o -name "*.zip" \) \
               -print
 
             exit 1
           fi
 
-          test -f boot.img
+          echo "BOOT_IMAGE=$BOOT_IMAGE" >> "$GITHUB_ENV"
 
+          echo
           echo "Boot image:"
-          ls -lh boot.img
+          echo "$BOOT_IMAGE"
 
-          file boot.img
-
+          ls -lh "$BOOT_IMAGE"
 
       # ============================================================
-      # INSTALL MAGISKBOOT
+      # MAGISKBOOT
+      #
+      # MagiskBoot --help returns exit code 1 in Magisk 27.
+      # Therefore DO NOT let set -e kill the job.
       # ============================================================
       - name: Install MagiskBoot
         shell: bash
@@ -162,57 +269,61 @@ jobs:
           MAGISK_VERSION="27.0"
 
           echo "=========================================="
-          echo "MAGISKBOOT"
+          echo "INSTALL MAGISKBOOT"
           echo "=========================================="
 
-          wget -q -O Magisk.apk \
+          wget -q \
+            -O "$GITHUB_WORKSPACE/Magisk.apk" \
             "https://github.com/topjohnwu/Magisk/releases/download/v${MAGISK_VERSION}/Magisk-v${MAGISK_VERSION}.apk"
 
-          test -s Magisk.apk
+          test -s "$GITHUB_WORKSPACE/Magisk.apk"
 
-          rm -rf magisk_extract
-          mkdir -p magisk_extract
+          rm -rf "$GITHUB_WORKSPACE/magisk_extract"
 
-          unzip -o Magisk.apk \
+          mkdir -p "$GITHUB_WORKSPACE/magisk_extract"
+
+          unzip -o \
+            "$GITHUB_WORKSPACE/Magisk.apk" \
             "lib/x86_64/libmagiskboot.so" \
-            -d magisk_extract
+            -d "$GITHUB_WORKSPACE/magisk_extract"
 
-          test -f magisk_extract/lib/x86_64/libmagiskboot.so
+          test -f \
+            "$GITHUB_WORKSPACE/magisk_extract/lib/x86_64/libmagiskboot.so"
 
           cp \
-            magisk_extract/lib/x86_64/libmagiskboot.so \
-            magiskboot
+            "$GITHUB_WORKSPACE/magisk_extract/lib/x86_64/libmagiskboot.so" \
+            "$GITHUB_WORKSPACE/magiskboot"
 
-          chmod +x magiskboot
+          chmod +x "$GITHUB_WORKSPACE/magiskboot"
 
-          sudo install -m 0755 \
-            magiskboot \
+          sudo install \
+            -m 0755 \
+            "$GITHUB_WORKSPACE/magiskboot" \
             /usr/local/bin/magiskboot
 
           test -x /usr/local/bin/magiskboot
 
-          echo "MagiskBoot installed:"
-          command -v magiskboot
-
-          echo "Testing MagiskBoot..."
-
+          # MagiskBoot returns 1 for --help.
           set +e
-          magiskboot --help >/tmp/magiskboot_help.txt 2>&1
-          MAGISK_HELP_RC=$?
+
+          magiskboot --help \
+            > "$GITHUB_WORKSPACE/magiskboot_help.txt" \
+            2>&1
+
+          MAGISKBOOT_HELP_RC=$?
+
           set -e
 
-          cat /tmp/magiskboot_help.txt
+          cat "$GITHUB_WORKSPACE/magiskboot_help.txt"
 
-          echo "MagiskBoot help exit code: $MAGISK_HELP_RC"
+          echo
+          echo "magiskboot --help exit code:"
+          echo "$MAGISKBOOT_HELP_RC"
 
-          # MagiskBoot 27.0 prints help and returns 1.
-          # This is NOT treated as a build failure.
-
-          echo "MagiskBoot ready."
-
+          test -x /usr/local/bin/magiskboot
 
       # ============================================================
-      # UNPACK ORIGINAL BOOT
+      # UNPACK BOOT
       # ============================================================
       - name: Unpack original boot image
         shell: bash
@@ -220,73 +331,36 @@ jobs:
           set -euxo pipefail
 
           echo "=========================================="
-          echo "UNPACK ORIGINAL BOOT"
+          echo "UNPACK BOOT IMAGE"
           echo "=========================================="
 
-          rm -rf boot_work
-          mkdir -p boot_work
+          rm -rf "$GITHUB_WORKSPACE/boot_work"
 
-          cp boot.img boot_work/boot.img
+          mkdir -p "$GITHUB_WORKSPACE/boot_work"
 
-          cd boot_work
+          cp \
+            "$BOOT_IMAGE" \
+            "$GITHUB_WORKSPACE/boot_work/boot.img"
+
+          cd "$GITHUB_WORKSPACE/boot_work"
 
           magiskboot unpack -h boot.img
 
-          echo "=========================================="
-          echo "UNPACKED COMPONENTS"
-          echo "=========================================="
-
+          echo
+          echo "Boot components:"
           ls -lah
 
           test -f kernel
 
-          echo "Kernel extracted:"
-          file kernel
-          ls -lh kernel
-
-          if [ -f kernel_dtb ]; then
-            echo "kernel_dtb found:"
-            ls -lh kernel_dtb
-          fi
-
-          if [ -f dtb ]; then
-            echo "dtb found:"
-            ls -lh dtb
-          fi
-
-          if [ -f ramdisk.cpio ]; then
-            echo "ramdisk.cpio found:"
-            ls -lh ramdisk.cpio
-          fi
-
-
       # ============================================================
-      # INSTALL EXTRACT-IKCONFIG
-      # ============================================================
-      - name: Install extract-ikconfig helper
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "INSTALL EXTRACT-IKCONFIG"
-          echo "=========================================="
-
-          mkdir -p tools
-
-          wget -q -O tools/extract-ikconfig \
-            https://raw.githubusercontent.com/torvalds/linux/v4.14/scripts/extract-ikconfig
-
-          test -s tools/extract-ikconfig
-
-          chmod +x tools/extract-ikconfig
-
-          echo "extract-ikconfig installed:"
-          ls -lh tools/extract-ikconfig
-
-
-      # ============================================================
-      # EXTRACT ORIGINAL KERNEL CONFIG
+      # EXTRACT ORIGINAL CONFIG
+      #
+      # DO NOT use:
+      # kernel/scripts/extract-ikconfig
+      #
+      # because your vendor tree does not contain it.
+      #
+      # Download the compatible helper separately.
       # ============================================================
       - name: Extract original kernel config
         shell: bash
@@ -294,210 +368,131 @@ jobs:
           set -euxo pipefail
 
           echo "=========================================="
-          echo "EXTRACT ORIGINAL KERNEL CONFIG"
+          echo "EXTRACT ORIGINAL CONFIG"
           echo "=========================================="
 
-          rm -f kernel_config_goc
+          rm -f "$GITHUB_WORKSPACE/kernel_config_goc"
+
+          wget -q \
+            -O "$GITHUB_WORKSPACE/extract-ikconfig" \
+            "https://raw.githubusercontent.com/torvalds/linux/v4.14/scripts/extract-ikconfig"
+
+          chmod +x "$GITHUB_WORKSPACE/extract-ikconfig"
 
           set +e
 
-          tools/extract-ikconfig \
-            boot_work/kernel \
-            > kernel_config_goc \
-            2>/tmp/extract_ikconfig.log
+          "$GITHUB_WORKSPACE/extract-ikconfig" \
+            "$GITHUB_WORKSPACE/boot_work/kernel" \
+            > "$GITHUB_WORKSPACE/kernel_config_goc" \
+            2> "$GITHUB_WORKSPACE/extract_ikconfig.log"
 
           EXTRACT_RC=$?
 
           set -e
 
-          echo "extract-ikconfig exit code: $EXTRACT_RC"
-
-          if [ "$EXTRACT_RC" -ne 0 ] || [ ! -s kernel_config_goc ]; then
-
-            echo "WARNING: Unable to extract embedded config."
-            echo
-            echo "extract-ikconfig output:"
-            cat /tmp/extract_ikconfig.log || true
-            echo
-            echo "Kernel:"
-            file boot_work/kernel
-            ls -lh boot_work/kernel
-
-            echo
-            echo "Continuing without original embedded config."
-
-            rm -f kernel_config_goc
-
-          else
+          if [ "$EXTRACT_RC" -eq 0 ] &&
+             [ -s "$GITHUB_WORKSPACE/kernel_config_goc" ]; then
 
             echo "Original kernel config extracted."
 
-            echo "Config size:"
-            wc -l kernel_config_goc
-
-            echo "=========================================="
-            echo "IMPORTANT CONFIG OPTIONS"
-            echo "=========================================="
+            wc -l "$GITHUB_WORKSPACE/kernel_config_goc"
 
             grep -E \
-              '^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG|CONFIG_SYSTEM_TRUSTED_KEYS|CONFIG_SYSTEM_REVOCATION_KEYS)=' \
-              kernel_config_goc || true
+              "^(CONFIG_SCHED_WALT|CONFIG_SCHED_FREQ_INPUT|CONFIG_COMPAT|CONFIG_COMPAT_VDSO|CONFIG_VDSO32|CONFIG_OVERLAY_FS|CONFIG_MODULE_SIG)=" \
+              "$GITHUB_WORKSPACE/kernel_config_goc" || true
 
-          fi
-
-
-      # ============================================================
-      # CLEAN KERNEL SOURCE
-      # ============================================================
-      - name: Prepare clean kernel source tree
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "PREPARE CLEAN KERNEL SOURCE"
-          echo "=========================================="
-
-          if [ -d kernel ] && [ -f kernel/Makefile ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          elif [ -f Makefile ] && [ -d arch/arm64 ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE"
           else
-            echo "ERROR: Kernel source not found."
-            exit 1
+
+            echo "WARNING: Unable to extract embedded kernel config."
+
+            cat "$GITHUB_WORKSPACE/extract_ikconfig.log" || true
+
+            rm -f "$GITHUB_WORKSPACE/kernel_config_goc"
           fi
 
-          cd "$KERNEL_DIR"
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          echo "Kernel directory:"
-          pwd
-
-          echo
-          echo "Git status BEFORE mrproper:"
-          git status --short || true
-
-          echo
-          echo "Running mrproper..."
-
-          make ARCH=arm64 mrproper
-
-          echo
-          echo "Git status AFTER mrproper:"
-          git status --short || true
-
-          # Remove only generated output.
-          rm -rf out
-
-          mkdir -p out
-
-          test -f Makefile
-          test -d arch/arm64
-
-          echo
-          echo "Kernel source prepared."
-
-
       # ============================================================
-      # INTEGRATE KERNELSU NEXT
+      # KERNELSU NEXT
       # ============================================================
       - name: Integrate KernelSU Next
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "=========================================="
-          echo "KERNELSU NEXT"
-          echo "=========================================="
-
-          if [ -d kernel ] && [ -f kernel/Makefile ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          elif [ -f Makefile ] && [ -d arch/arm64 ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE"
-          else
-            echo "ERROR: Kernel source not found."
-            exit 1
-          fi
-
           cd "$KERNEL_DIR"
+
+          echo "=========================================="
+          echo "INTEGRATE KERNELSU NEXT"
+          echo "=========================================="
 
           rm -rf KSU
           rm -rf drivers/kernelsu
 
           git clone \
             --depth=1 \
-            https://github.com/KernelSU-Next/KernelSU-Next \
+            "https://github.com/KernelSU-Next/KernelSU-Next" \
             KSU
 
           test -d KSU/kernel
 
-          cp -a KSU/kernel drivers/kernelsu
+          mkdir -p drivers
+
+          cp -a \
+            KSU/kernel \
+            drivers/kernelsu
 
           rm -rf KSU
 
-          test -d drivers/kernelsu
           test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/Makefile
 
-          if ! grep -qF 'obj-y += kernelsu/' drivers/Makefile; then
-            printf '\nobj-y += kernelsu/\n' >> drivers/Makefile
+          # Add KernelSU Makefile entry.
+          if ! grep -qF "obj-y += kernelsu/" drivers/Makefile; then
+            printf "\nobj-y += kernelsu/\n" >> drivers/Makefile
           fi
 
+          # Add KernelSU Kconfig entry.
           if ! grep -qF 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
             printf '\nsource "drivers/kernelsu/Kconfig"\n' >> drivers/Kconfig
           fi
 
-          echo "KernelSU integration complete."
+          echo
+          echo "KernelSU Makefile:"
+          grep -nF "kernelsu" drivers/Makefile
 
           echo
-          echo "drivers/Makefile:"
-          grep -nF 'kernelsu' drivers/Makefile || true
-
-          echo
-          echo "drivers/Kconfig:"
-          grep -nF 'drivers/kernelsu/Kconfig' drivers/Kconfig || true
-
+          echo "KernelSU Kconfig:"
+          grep -nF "drivers/kernelsu/Kconfig" drivers/Kconfig
 
       # ============================================================
-      # PREPARE CONFIG
+      # CONFIG
       # ============================================================
-      - name: Prepare kernel config
+      - name: Prepare kernel configuration
         shell: bash
         run: |
           set -euxo pipefail
 
-          echo "=========================================="
-          echo "PREPARE CONFIG"
-          echo "=========================================="
-
-          if [ -d kernel ] && [ -f kernel/Makefile ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          elif [ -f Makefile ] && [ -d arch/arm64 ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE"
-          else
-            echo "ERROR: Kernel source not found."
-            exit 1
-          fi
-
           cd "$KERNEL_DIR"
 
-          export ARCH=arm64
-          export SUBARCH=arm64
+          echo "=========================================="
+          echo "PREPARE KERNEL CONFIG"
+          echo "=========================================="
 
-          rm -rf out
-          mkdir -p out
+          # ----------------------------------------------------------
+          # Use original config when available.
+          # ----------------------------------------------------------
+          if [ -s "$GITHUB_WORKSPACE/kernel_config_goc" ]; then
 
-          # Prefer the config extracted from the original boot image.
-          if [ -s ../kernel_config_goc ]; then
-            cp ../kernel_config_goc out/.config
+            cp \
+              "$GITHUB_WORKSPACE/kernel_config_goc" \
+              out/.config
 
-          elif [ -s "$GITHUB_WORKSPACE/kernel_config_goc" ]; then
-            cp "$GITHUB_WORKSPACE/kernel_config_goc" out/.config
+            echo "Using config extracted from original boot image."
 
           else
-            echo "No embedded original config found."
-            echo "Trying available X00TD/X00QD defconfig."
+
+            echo "No embedded config found."
+
+            echo "Searching vendor defconfig..."
 
             DEFCONFIG=""
 
@@ -516,13 +511,15 @@ jobs:
             done
 
             if [ -z "$DEFCONFIG" ]; then
-              echo "ERROR: No suitable defconfig found."
+
+              echo "ERROR: No X00TD/X00QD defconfig found."
+
               find arch/arm64/configs \
                 -maxdepth 1 \
                 -type f \
-                -printf '%f\n' |
+                -printf "%f\n" |
                 sort |
-                grep -Ei 'x00|ze620|asus' || true
+                grep -Ei "x00|ze620|asus" || true
 
               exit 1
             fi
@@ -533,61 +530,84 @@ jobs:
               O=out \
               ARCH=arm64 \
               "$DEFCONFIG"
+
           fi
 
           test -s out/.config
 
-          echo "Running olddefconfig..."
-
+          # ----------------------------------------------------------
+          # Resolve configuration.
+          # ----------------------------------------------------------
           make \
             O=out \
             ARCH=arm64 \
             olddefconfig
 
-          echo "Applying KernelSU configuration..."
+          # ----------------------------------------------------------
+          # Build scripts/config.
+          # ----------------------------------------------------------
+          if [ ! -x scripts/config ]; then
 
-          if [ -x scripts/config ]; then
-
-            ./scripts/config \
-              --file out/.config \
-              --enable KSU || true
-
-            ./scripts/config \
-              --file out/.config \
-              --enable OVERLAY_FS || true
-
-            ./scripts/config \
-              --file out/.config \
-              --disable MODULE_SIG || true
-
-            ./scripts/config \
-              --file out/.config \
-              --set-str SYSTEM_TRUSTED_KEYS "" || true
-
-            ./scripts/config \
-              --file out/.config \
-              --set-str SYSTEM_REVOCATION_KEYS "" || true
+            make \
+              O=out \
+              ARCH=arm64 \
+              scripts
 
           fi
 
+          test -x scripts/config
+
+          # ----------------------------------------------------------
+          # KernelSU configuration.
+          # ----------------------------------------------------------
+          ./scripts/config \
+            --file out/.config \
+            --enable KSU || true
+
+          # KernelSU commonly needs overlay filesystem.
+          ./scripts/config \
+            --file out/.config \
+            --enable OVERLAY_FS || true
+
+          # ----------------------------------------------------------
+          # Disable module signing.
+          #
+          # This avoids old vendor-tree certificate problems with
+          # modern OpenSSL.
+          # ----------------------------------------------------------
+          ./scripts/config \
+            --file out/.config \
+            --disable MODULE_SIG || true
+
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_TRUSTED_KEYS "" || true
+
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_REVOCATION_KEYS "" || true
+
+          # ----------------------------------------------------------
+          # Final config resolution.
+          # ----------------------------------------------------------
           make \
             O=out \
             ARCH=arm64 \
             olddefconfig
 
-          test -f out/.config
+          test -s out/.config
 
+          echo
           echo "=========================================="
           echo "FINAL CONFIG"
           echo "=========================================="
 
           grep -E \
-            '^(CONFIG_(KSU|OVERLAY_FS|MODULE_SIG|SYSTEM_TRUSTED_KEYS|SYSTEM_REVOCATION_KEYS))=' \
+            "^(CONFIG_(KSU|OVERLAY_FS|MODULE_SIG|SYSTEM_TRUSTED_KEYS|SYSTEM_REVOCATION_KEYS))=" \
             out/.config || true
 
-
       # ============================================================
-      # DOWNLOAD ANDROID LLVM CLANG
+      # ANDROID LLVM
       # ============================================================
       - name: Download Android LLVM Clang
         shell: bash
@@ -595,60 +615,60 @@ jobs:
           set -euxo pipefail
 
           echo "=========================================="
-          echo "ANDROID CLANG"
+          echo "DOWNLOAD ANDROID LLVM"
           echo "=========================================="
+
+          cd "$GITHUB_WORKSPACE"
 
           rm -rf clang
 
           git clone \
             --depth=1 \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86" \
             clang
 
           CLANG_BIN="$(
             find "$GITHUB_WORKSPACE/clang" \
               -type f \
-              -path '*/bin/clang' \
-              -printf '%h\n' |
+              -path "*/bin/clang" \
+              -printf "%h\n" |
               sort |
               tail -1
           )"
 
           test -n "$CLANG_BIN"
+
           test -x "$CLANG_BIN/clang"
           test -x "$CLANG_BIN/ld.lld"
 
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
-          echo "=========================================="
-          echo "CLANG VERSION"
-          echo "=========================================="
-
+          echo
+          echo "Clang:"
           "$CLANG_BIN/clang" --version
+
+          echo
+          echo "LLD:"
           "$CLANG_BIN/ld.lld" --version
 
-
       # ============================================================
-      # BUILD KERNEL
+      # BUILD
+      #
+      # -j1 is intentional.
+      #
+      # Previous builds failed with:
+      #
+      # LLVM ERROR: IO failure on output stream: Broken pipe
+      #
+      # This old vendor kernel + modern LLVM combination is unstable
+      # with the previous parallel build.
       # ============================================================
       - name: Build kernel
         shell: bash
         run: |
           set -euxo pipefail
-
-          echo "=========================================="
-          echo "BUILD KERNEL"
-          echo "=========================================="
-
-          if [ -d kernel ] && [ -f kernel/Makefile ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE/kernel"
-          elif [ -f Makefile ] && [ -d arch/arm64 ]; then
-            KERNEL_DIR="$GITHUB_WORKSPACE"
-          else
-            echo "ERROR: Kernel source not found."
-            exit 1
-          fi
 
           cd "$KERNEL_DIR"
 
@@ -680,42 +700,22 @@ jobs:
           ld.lld --version
 
           echo
-          echo "AArch64 GCC:"
-          aarch64-linux-gnu-gcc --version
-
-          echo
-          echo "ARM32 GCC:"
-          arm-linux-gnueabi-gcc --version
-
-          echo
           echo "=========================================="
-          echo "CONFIG CHECK"
+          echo "BUILD KERNEL"
           echo "=========================================="
 
           test -f out/.config
-
-          grep -E \
-            'CONFIG_(KSU|OVERLAY_FS|MODULE_SIG|SYSTEM_TRUSTED_KEYS|SYSTEM_REVOCATION_KEYS)' \
-            out/.config || true
-
-          echo
-          echo "=========================================="
-          echo "BUILD"
-          echo "=========================================="
+          test -d drivers/kernelsu
 
           # IMPORTANT:
+          # Do NOT use -j4 here.
           #
-          # Previous builds failed with:
+          # The previous build repeatedly failed:
           #
           # LLVM ERROR: IO failure on output stream: Broken pipe
           #
-          # Use one job to eliminate the parallel LLVM failure.
-          JOBS=1
-
-          echo "Build jobs: $JOBS"
-
           make \
-            -j"$JOBS" \
+            -j1 \
             O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -734,41 +734,16 @@ jobs:
             KCFLAGS="-Wno-error" \
             Image.gz
 
-          echo "=========================================="
-          echo "BUILD COMPLETE"
-          echo "=========================================="
+          test -s out/arch/arm64/boot/Image.gz
 
-          test -f out/arch/arm64/boot/Image.gz
+          echo
+          echo "Kernel built successfully:"
 
-          ls -lh out/arch/arm64/boot/Image.gz
-
-
-      # ============================================================
-      # VERIFY KERNEL OUTPUT
-      # ============================================================
-      - name: Verify kernel output
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "VERIFY KERNEL"
-          echo "=========================================="
-
-          if [ -d kernel ]; then
-            IMAGE="kernel/out/arch/arm64/boot/Image.gz"
-          else
-            IMAGE="out/arch/arm64/boot/Image.gz"
-          fi
-
-          test -f "$IMAGE"
-
-          file "$IMAGE"
-          ls -lh "$IMAGE"
-
+          ls -lh \
+            out/arch/arm64/boot/Image.gz
 
       # ============================================================
-      # REPACK BOOT IMAGE
+      # REPACK BOOT
       # ============================================================
       - name: Repack boot image
         shell: bash
@@ -779,249 +754,103 @@ jobs:
           echo "REPACK BOOT IMAGE"
           echo "=========================================="
 
-          test -f boot.img
+          KERNEL_IMAGE="$KERNEL_DIR/out/arch/arm64/boot/Image.gz"
 
-          if [ -d kernel ]; then
-            KERNEL_IMAGE="$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz"
-          else
-            KERNEL_IMAGE="$GITHUB_WORKSPACE/out/arch/arm64/boot/Image.gz"
-          fi
+          test -s "$KERNEL_IMAGE"
+          test -f "$GITHUB_WORKSPACE/boot_work/boot.img"
 
-          test -f "$KERNEL_IMAGE"
+          rm -rf "$GITHUB_WORKSPACE/repack"
 
-          rm -rf repack
-          mkdir -p repack
+          mkdir -p "$GITHUB_WORKSPACE/repack"
 
-          cp boot.img repack/boot.img
+          cp -a \
+            "$GITHUB_WORKSPACE/boot_work/." \
+            "$GITHUB_WORKSPACE/repack/"
 
-          cd repack
+          cd "$GITHUB_WORKSPACE/repack"
 
-          echo "Unpacking original boot image..."
-
-          magiskboot unpack -h boot.img
-
-          echo "=========================================="
-          echo "ORIGINAL BOOT COMPONENTS"
-          echo "=========================================="
-
-          ls -lah
-
-          test -f kernel
-
-          echo
-          echo "Original kernel:"
-          file kernel
-          ls -lh kernel
-
-          echo
-          echo "New kernel:"
-          file "$KERNEL_IMAGE"
-          ls -lh "$KERNEL_IMAGE"
-
-          # ========================================================
-          # REPLACE KERNEL
-          # ========================================================
+          # ----------------------------------------------------------
+          # MagiskBoot unpack normally leaves "kernel" decompressed.
           #
-          # magiskboot unpack decompresses the kernel component.
-          #
-          # Image.gz produced by the kernel build is gzip compressed.
-          # Decompress it before putting it into the unpack directory.
-          #
-          # magiskboot repack will automatically restore the original
-          # compression format based on the original boot image.
-          # ========================================================
+          # Image.gz is therefore decompressed before replacing it.
+          # MagiskBoot repack detects the original compression format.
+          # ----------------------------------------------------------
+          gzip -cd \
+            "$KERNEL_IMAGE" \
+            > kernel.new
 
-          rm -f kernel
+          test -s kernel.new
 
-          gzip -cd "$KERNEL_IMAGE" > kernel
+          mv kernel.new kernel
 
-          test -s kernel
-
-          echo
-          echo "Replacement kernel:"
-          file kernel
-          ls -lh kernel
-
-          echo
-          echo "=========================================="
-          echo "PRESERVED COMPONENTS"
-          echo "=========================================="
-
-          if [ -f kernel_dtb ]; then
-            echo "kernel_dtb: preserved"
-          fi
-
-          if [ -f dtb ]; then
-            echo "dtb: preserved"
-          fi
-
-          if [ -f recovery_dtbo ]; then
-            echo "recovery_dtbo: preserved"
-          fi
-
-          if [ -f ramdisk.cpio ]; then
-            echo "ramdisk.cpio: preserved"
-          fi
-
-          if [ -f second ]; then
-            echo "second: preserved"
-          fi
-
-          if [ -f extra ]; then
-            echo "extra: preserved"
-          fi
-
-          echo
-          echo "=========================================="
-          echo "MAGISKBOOT REPACK"
-          echo "=========================================="
-
-          magiskboot repack \
+          # ----------------------------------------------------------
+          # Repack.
+          # ----------------------------------------------------------
+          magiskboot \
+            repack \
             boot.img \
             new-boot.img
 
-          test -f new-boot.img
           test -s new-boot.img
 
-          cp new-boot.img "$GITHUB_WORKSPACE/boot_ksu.img"
+          cp \
+            new-boot.img \
+            "$GITHUB_WORKSPACE/boot_ksu.img"
 
           echo
-          echo "New boot image:"
-          ls -lh "$GITHUB_WORKSPACE/boot_ksu.img"
+          echo "KernelSU boot image:"
 
-          file "$GITHUB_WORKSPACE/boot_ksu.img"
+          ls -lh \
+            "$GITHUB_WORKSPACE/boot_ksu.img"
 
+          file \
+            "$GITHUB_WORKSPACE/boot_ksu.img"
 
       # ============================================================
-      # VERIFY BOOT IMAGE
+      # VERIFY
       # ============================================================
-      - name: Verify repacked boot image
+      - name: Verify boot image
         shell: bash
         run: |
           set -euxo pipefail
 
           echo "=========================================="
-          echo "VERIFY REPACKED BOOT"
+          echo "VERIFY BOOT IMAGE"
           echo "=========================================="
 
-          test -f boot.img
-          test -f boot_ksu.img
-          test -s boot_ksu.img
-
-          echo "Original:"
-          ls -lh boot.img
+          test -s "$GITHUB_WORKSPACE/boot_ksu.img"
 
           echo
-          echo "New:"
-          ls -lh boot_ksu.img
+          echo "Original boot:"
+          ls -lh "$BOOT_IMAGE"
 
           echo
-          echo "File information:"
-          file boot.img
-          file boot_ksu.img
+          echo "KernelSU boot:"
+          ls -lh "$GITHUB_WORKSPACE/boot_ksu.img"
 
-          echo
-          echo "MagiskBoot verification:"
-
+          # MagiskBoot verify can return non-zero for an image that
+          # is still structurally usable, so do not kill the workflow.
           set +e
 
-          magiskboot verify boot_ksu.img
+          magiskboot \
+            verify \
+            "$GITHUB_WORKSPACE/boot_ksu.img"
 
           VERIFY_RC=$?
 
           set -e
 
-          echo "AVB verify exit code: $VERIFY_RC"
-
-          # verify returns non-zero when the image does not contain
-          # an AVB 1.0 signature. That is not automatically an error.
-
-
-      # ============================================================
-      # CHECK BOOT IMAGE SIZE
-      # ============================================================
-      - name: Check boot image size
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "CHECK BOOT SIZE"
-          echo "=========================================="
-
-          ORIGINAL=$(stat -c%s boot.img)
-          NEW=$(stat -c%s boot_ksu.img)
-
-          echo "Original size: $ORIGINAL"
-          echo "New size:      $NEW"
-
-          if [ "$NEW" -gt "$ORIGINAL" ]; then
-            echo
-            echo "WARNING:"
-            echo "New boot image is larger than original."
-            echo
-            echo "Original image will NOT be truncated."
-            echo "Failing is safer than producing a corrupted boot image."
-            exit 1
-          fi
-
-          PAD=$((ORIGINAL - NEW))
-
-          if [ "$PAD" -gt 0 ]; then
-
-            echo "Padding image by $PAD bytes."
-
-            dd \
-              if=/dev/zero \
-              bs=1 \
-              count="$PAD" \
-              status=progress \
-              >> boot_ksu.img
-
-          fi
-
-          FINAL=$(stat -c%s boot_ksu.img)
-
-          echo "Final size: $FINAL"
-
-          if [ "$FINAL" -ne "$ORIGINAL" ]; then
-            echo "ERROR: final boot image size does not match original."
-            exit 1
-          fi
-
-          echo "Boot image size OK."
-
-
-      # ============================================================
-      # FINAL INFORMATION
-      # ============================================================
-      - name: Final artifact information
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "=========================================="
-          echo "FINAL OUTPUT"
-          echo "=========================================="
-
-          test -f boot_ksu.img
-          test -s boot_ksu.img
-
-          ls -lh boot_ksu.img
-
-          file boot_ksu.img
-
           echo
-          echo "SHA256:"
-          sha256sum boot_ksu.img
-
+          echo "magiskboot verify exit code: $VERIFY_RC"
 
       # ============================================================
-      # UPLOAD ARTIFACT
+      # ARTIFACTS
       # ============================================================
-      - name: Upload KernelSU boot image
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: boot_ksu_X00QD_KernelSU
-          path: boot_ksu.img
+          name: ZE620KL-KernelSU
+          path: |
+            boot_ksu.img
+            ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/Image.gz
           if-no-files-found: error
