@@ -24,7 +24,7 @@ jobs:
       - name: Install build dependencies
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           sudo apt-get update
 
@@ -54,7 +54,7 @@ jobs:
       - name: Install MagiskBoot
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           wget -q -O Magisk.apk \
             https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
@@ -74,6 +74,7 @@ jobs:
 
           chmod +x magiskboot
 
+          # MagiskBoot trả exit code 1 với --help trên một số bản.
           ./magiskboot --help || true
 
           sudo install -m 0755 \
@@ -82,6 +83,8 @@ jobs:
 
           command -v magiskboot
 
+          magiskboot --help || true
+
 
       # ============================================================
       # KERNEL SOURCE
@@ -89,7 +92,7 @@ jobs:
       - name: Clone ASUS SDM660 Kernel
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           rm -rf kernel
 
@@ -101,19 +104,20 @@ jobs:
 
           cd kernel
 
-          git status --short
-
           test -d arch/arm64
           test -f Makefile
 
+          echo "Kernel commit:"
+          git rev-parse HEAD
+
 
       # ============================================================
-      # SOURCE CHECK
+      # CHECK SOURCE
       # ============================================================
       - name: Check kernel source
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
@@ -121,8 +125,9 @@ jobs:
           echo "KERNEL SOURCE"
           echo "=========================================="
 
-          echo "Kernel:"
-          git rev-parse HEAD
+          test -d arch/arm64
+          test -d arch/arm64/configs
+          test -f Makefile
 
           echo
           echo "Available defconfigs:"
@@ -141,15 +146,15 @@ jobs:
       - name: Extract original boot config
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           if [ -f boot.zip ]; then
             unzip -o boot.zip
           fi
 
           if [ ! -f boot.img ]; then
-            echo "WARNING: boot.img not found."
-            echo "Kernel compilation will continue."
+            echo "boot.img not found."
+            echo "Kernel build will continue without boot repack."
             exit 0
           fi
 
@@ -172,23 +177,26 @@ jobs:
 
             else
 
-              echo "No embedded kernel config."
+              echo "Embedded kernel config is empty."
               rm -f kernel_config_goc
 
             fi
+
           else
+
             echo "Unable to extract original kernel config."
             rm -f kernel_config_goc
+
           fi
 
 
       # ============================================================
-      # VERIFY / CREATE DEFCONFIG
+      # PREPARE DEFCONFIG
       # ============================================================
       - name: Prepare defconfig
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
@@ -196,20 +204,26 @@ jobs:
 
             echo "Using custom_x00qd_defconfig"
 
-          else
+          elif [ -f arch/arm64/configs/defconfig ]; then
 
             echo "custom_x00qd_defconfig not found."
+            echo "Using standard defconfig."
 
-            if [ -f arch/arm64/configs/defconfig ]; then
-              echo "Using defconfig"
-              cp \
-                arch/arm64/configs/defconfig \
-                arch/arm64/configs/custom_x00qd_defconfig
+            cp \
+              arch/arm64/configs/defconfig \
+              arch/arm64/configs/custom_x00qd_defconfig
 
-            else
-              echo "ERROR: No usable defconfig found."
-              exit 1
-            fi
+          else
+
+            echo "ERROR: No usable defconfig found."
+
+            find arch/arm64/configs \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' |
+              sort
+
+            exit 1
 
           fi
 
@@ -218,12 +232,12 @@ jobs:
 
 
       # ============================================================
-      # KERNELSU
+      # KERNELSU NEXT
       # ============================================================
       - name: Integrate KernelSU Next
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
@@ -263,7 +277,7 @@ jobs:
 
           test -d drivers/kernelsu
 
-          echo "KernelSU source integrated."
+          echo "KernelSU source integrated successfully."
 
 
       # ============================================================
@@ -272,7 +286,7 @@ jobs:
       - name: Download Android LLVM Clang
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           rm -rf clang
 
@@ -299,22 +313,28 @@ jobs:
           echo "$CLANG_BIN" \
             >> "$GITHUB_PATH"
 
+          echo "=========================================="
+          echo "CLANG"
+          echo "=========================================="
+
           "$CLANG_BIN/clang" --version
 
 
       # ============================================================
-      # CLEAN OUT TREE
+      # CLEAN OUTPUT
       # ============================================================
       - name: Prepare clean output tree
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
           rm -rf out
 
           mkdir -p out
+
+          test -d out
 
           echo "Output directory:"
           realpath out
@@ -326,12 +346,16 @@ jobs:
       - name: Generate kernel config
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
           export ARCH=arm64
           export SUBARCH=arm64
+
+          echo "=========================================="
+          echo "DEFCONFIG"
+          echo "=========================================="
 
           make \
             O=out \
@@ -341,7 +365,7 @@ jobs:
           test -f out/.config
 
           echo "=========================================="
-          echo "CONFIGURATION"
+          echo "KERNEL CONFIG"
           echo "=========================================="
 
           # KernelSU
@@ -367,8 +391,13 @@ jobs:
             --file out/.config \
             --set-str SYSTEM_REVOCATION_KEYS ""
 
-          # Disable 32-bit VDSO.
-          # This avoids the previous assembler -EL problem.
+          # ========================================================
+          # VDSO32
+          # ========================================================
+          # Fix previous:
+          #
+          # /usr/bin/as: unrecognized option '-EL'
+          #
           ./scripts/config \
             --file out/.config \
             --disable VDSO32
@@ -377,11 +406,8 @@ jobs:
             --file out/.config \
             --disable COMPAT_VDSO
 
-          # Keep ARM64 kernel compatible with the original
-          # SDM660 source unless the source explicitly requires
-          # otherwise.
-          #
-          # Do NOT blindly disable CONFIG_COMPAT here.
+          # Không disable CONFIG_COMPAT.
+          # SDM660/Android 13 có thể cần ARM32 compatibility.
 
           make \
             O=out \
@@ -389,7 +415,9 @@ jobs:
             olddefconfig
 
           echo
-          echo "Final config:"
+          echo "=========================================="
+          echo "FINAL CONFIG"
+          echo "=========================================="
 
           grep -E \
             'CONFIG_(KSU|OVERLAY_FS|VDSO32|COMPAT_VDSO|COMPAT|MODULE_SIG)' \
@@ -397,29 +425,29 @@ jobs:
 
 
       # ============================================================
-      # SOURCE SANITY
+      # VERIFY SOURCE
       # ============================================================
-      - name: Verify source tree
+      - name: Verify kernel source
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
-
-          echo "Checking kernel source..."
 
           test -f Makefile
           test -d arch/arm64
           test -d drivers/kernelsu
           test -f out/.config
 
-          echo
-          echo "Source modifications:"
+          echo "=========================================="
+          echo "SOURCE CHECK"
+          echo "=========================================="
+
           git status --short || true
 
           echo
-          echo "Output:"
-          ls -la out | head
+          echo "Output directory:"
+          ls -la out | head -50
 
 
       # ============================================================
@@ -428,7 +456,7 @@ jobs:
       - name: Build kernel
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
@@ -440,23 +468,52 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
+          export LLVM=1
+          export LLVM_IAS=1
+
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export READELF=llvm-readelf
+
           echo "=========================================="
           echo "TOOLCHAIN"
           echo "=========================================="
 
           clang --version
           ld.lld --version
+
+          echo
+          echo "AArch64 GCC:"
           aarch64-linux-gnu-gcc --version
+
+          echo
+          echo "ARM32 GCC:"
           arm-linux-gnueabi-gcc --version
 
+          echo
           echo "=========================================="
           echo "BUILD KERNEL"
           echo "=========================================="
 
+          # Giới hạn parallel build để tránh:
+          #
+          # LLVM ERROR:
+          # IO failure on output stream: Broken pipe
+          #
+          JOBS=4
+
+          echo "Parallel jobs: $JOBS"
+
           make \
-            -j"$(nproc)" \
+            -j"$JOBS" \
             O=out \
             ARCH=arm64 \
+            SUBARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
@@ -472,6 +529,17 @@ jobs:
             KCFLAGS="-Wno-error" \
             Image.gz
 
+          echo
+          echo "=========================================="
+          echo "KERNEL BUILD SUCCESS"
+          echo "=========================================="
+
+          test -f \
+            out/arch/arm64/boot/Image.gz
+
+          ls -lh \
+            out/arch/arm64/boot/Image.gz
+
 
       # ============================================================
       # VERIFY KERNEL
@@ -479,15 +547,14 @@ jobs:
       - name: Verify kernel output
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd kernel
 
           test -f \
             out/arch/arm64/boot/Image.gz
 
-          echo "Kernel built successfully."
-
+          echo "Kernel image:"
           ls -lh \
             out/arch/arm64/boot/Image.gz
 
@@ -499,14 +566,17 @@ jobs:
         if: ${{ hashFiles('boot.img') != '' }}
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           test -f boot.img
 
           rm -rf workdir
+
           mkdir -p workdir
 
-          cp boot.img workdir/boot.img
+          cp \
+            boot.img \
+            workdir/boot.img
 
           cd workdir
 
@@ -520,18 +590,19 @@ jobs:
 
           test -f "$KERNEL"
 
-          echo "Original boot components:"
+          echo "Boot components:"
           ls -lah
 
+          echo
           echo "Replacing kernel..."
 
-          # MagiskBoot normally writes/reads the kernel
-          # component as "kernel".
-          #
-          # Image.gz is used directly only when the original
-          # kernel component is gzip-compatible.
-          cp "$KERNEL" kernel
+          # Giữ các thành phần boot gốc.
+          # Chỉ thay kernel.
+          cp \
+            "$KERNEL" \
+            kernel
 
+          echo
           echo "=========================================="
           echo "REPACK BOOT"
           echo "=========================================="
@@ -546,6 +617,8 @@ jobs:
             new-boot.img \
             "$GITHUB_WORKSPACE/boot_ksu.img"
 
+          echo
+          echo "New boot image:"
           ls -lh \
             "$GITHUB_WORKSPACE/boot_ksu.img"
 
@@ -557,33 +630,38 @@ jobs:
         if: ${{ hashFiles('boot_ksu.img') != '' }}
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           test -f boot_ksu.img
 
-          echo "Boot image generated."
+          echo "=========================================="
+          echo "BOOT IMAGE"
+          echo "=========================================="
 
           ls -lh boot_ksu.img
 
           echo
           echo "MagiskBoot verification:"
 
-          magiskboot verify boot_ksu.img || true
+          magiskboot verify \
+            boot_ksu.img || true
 
 
       # ============================================================
-      # ARTIFACT
+      # UPLOAD KERNEL
       # ============================================================
-      - name: Upload kernel
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZE620KL-KernelSU-Kernel
-          path: |
-            kernel/out/arch/arm64/boot/Image.gz
+          path: kernel/out/arch/arm64/boot/Image.gz
           if-no-files-found: error
 
 
-      - name: Upload boot image
+      # ============================================================
+      # UPLOAD BOOT
+      # ============================================================
+      - name: Upload boot artifact
         if: ${{ hashFiles('boot_ksu.img') != '' }}
         uses: actions/upload-artifact@v4
         with:
