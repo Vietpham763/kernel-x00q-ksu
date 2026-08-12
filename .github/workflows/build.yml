@@ -7,75 +7,31 @@ jobs:
   build:
     runs-on: ubuntu-22.04
 
-    env:
-      ARCH: arm64
-      SUBARCH: arm64
-      KERNEL_REPO: https://github.com/LineageOS/android_kernel_asus_sdm660.git
-      KERNEL_BRANCH: lineage-18.1
-      KSU_VERSION: v0.9.5
-
     steps:
-
-      # ==========================================================
-      # 1. CHECKOUT
-      # ==========================================================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-
-      # ==========================================================
-      # 2. DEPENDENCIES
-      # ==========================================================
       - name: Install dependencies
         run: |
-          set -eux
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            cpio \
-            flex \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            git \
-            libelf-dev \
-            libncurses5-dev \
-            libssl-dev \
-            device-tree-compiler \
-            python3 \
-            rsync \
-            unzip \
-            wget \
-            xz-utils
+            bc bison build-essential cpio flex \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            libelf-dev libncurses5-dev libssl-dev \
+            device-tree-compiler git unzip wget rsync
 
-
-      # ==========================================================
-      # 3. EXTRACT ORIGINAL BOOT
-      # ==========================================================
-      - name: Extract crDroid boot.img
+      - name: Get boot.img
         run: |
           set -eux
 
           test -f boot.zip
-
           unzip -o boot.zip
 
           test -f boot.img
 
           mkdir -p original
-
           cp boot.img original/boot.img
 
-          echo "Original boot.img:"
-          ls -lh original/boot.img
-
-
-      # ==========================================================
-      # 4. INSTALL MAGISKBOOT
-      # ==========================================================
       - name: Install MagiskBoot
         run: |
           set -eux
@@ -87,158 +43,49 @@ jobs:
             "lib/x86_64/libmagiskboot.so" \
             -d magisk_extract
 
-          cp \
-            magisk_extract/lib/x86_64/libmagiskboot.so \
-            magiskboot
-
+          cp magisk_extract/lib/x86_64/libmagiskboot.so magiskboot
           chmod +x magiskboot
 
-          test -x magiskboot
-
-          echo "MagiskBoot ready."
-
-
-      # ==========================================================
-      # 5. UNPACK ORIGINAL BOOT
-      # ==========================================================
-      - name: Unpack original boot.img
+      - name: Unpack original boot
         run: |
           set -eux
 
-          rm -rf boot_work
-
           mkdir -p boot_work
-
           cp original/boot.img boot_work/boot.img
 
           cd boot_work
-
           ../magiskboot unpack boot.img
-
-          echo ""
-          echo "=========================================="
-          echo "ORIGINAL BOOT STRUCTURE"
-          echo "=========================================="
 
           ls -lah
 
-          echo ""
-          echo "Kernel:"
-          file kernel || true
+          test -f kernel
 
-          echo ""
-          echo "Kernel DTB:"
-          file kernel_dtb || true
-
-          echo ""
-          echo "Ramdisk:"
-          ls -lh ramdisk.cpio* 2>/dev/null || true
-
-
-      # ==========================================================
-      # 6. ANALYZE ORIGINAL KERNEL
-      # ==========================================================
-      - name: Analyze original kernel
-        run: |
-          set -eux
-
-          cd boot_work
-
-          echo "=========================================="
-          echo "ORIGINAL KERNEL"
-          echo "=========================================="
-
-          echo "Kernel size:"
-          stat -c "%s bytes" kernel
-
-          echo ""
-          echo "Kernel version strings:"
-
-          strings kernel \
-            | grep -E \
-              'Linux version|Coldplaylite|4\.4\.' \
-            | head -30 \
-            || true
-
-
-      # ==========================================================
-      # 7. CLONE KERNEL SOURCE
-      # ==========================================================
       - name: Clone kernel source
         run: |
           set -eux
 
-          rm -rf kernel
-
           git clone \
             --depth=1 \
-            -b "${KERNEL_BRANCH}" \
-            "${KERNEL_REPO}" \
+            --branch lineage-18.1 \
+            https://github.com/LineageOS/android_kernel_asus_sdm660.git \
             kernel
 
-          cd kernel
-
-          echo "=========================================="
-          echo "KERNEL SOURCE"
-          echo "=========================================="
-
-          git log -1 --oneline
-
-          echo ""
-          echo "Kernel version BEFORE CLEAN:"
-
-          make kernelversion
-
-
-      # ==========================================================
-      # 8. CLEAN KERNEL SOURCE
-      # ==========================================================
       - name: Clean kernel source
         run: |
           set -eux
 
           cd kernel
 
-          echo "=========================================="
-          echo "CLEAN KERNEL SOURCE"
-          echo "=========================================="
-
+          # IMPORTANT:
+          # clean source BEFORE generating any configuration
           make mrproper
 
-          git status --short
+          # Verify source does not contain build configuration
+          test ! -f .config
+          test ! -d include/config
 
-          echo ""
-          echo "Source tree cleaned."
+          echo "Source tree is clean."
 
-
-      # ==========================================================
-      # 9. FIND DEFCONFIG
-      # ==========================================================
-      - name: Find defconfig
-        run: |
-          set -eux
-
-          cd kernel
-
-          echo "=========================================="
-          echo "AVAILABLE DEFCONFIG"
-          echo "=========================================="
-
-          find arch/arm64/configs \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f\n' \
-            | grep -Ei \
-              'sdm660|x00|asus' \
-            | sort \
-            || true
-
-          test -f arch/arm64/configs/sdm660_defconfig
-
-
-      # ==========================================================
-      # 10. INTEGRATE KERNELSU
-      # ==========================================================
       - name: Integrate KernelSU
         run: |
           set -eux
@@ -246,53 +93,52 @@ jobs:
           cd kernel
 
           curl -LSs \
-            "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" \
-            | bash -s "${KSU_VERSION}"
+            https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh \
+            | bash -s v0.9.5
 
           test -d KernelSU
 
-          echo ""
-          echo "KernelSU integrated."
-
-
-      # ==========================================================
-      # 11. CREATE OUTPUT DIRECTORY
-      # ==========================================================
-      - name: Prepare build output
+      - name: Configure kernel ONLY in out
         run: |
           set -eux
 
           cd kernel
 
           rm -rf out
-
           mkdir -p out
 
-          echo "Output directory prepared."
+          # Never run plain `make defconfig`.
+          # Always specify O=out.
+          make O=out ARCH=arm64 sdm660_defconfig
 
+          # Check that configuration was created in OUT,
+          # not in source tree.
+          test -f out/.config
 
-      # ==========================================================
-      # 12. CONFIGURE KERNEL
-      # ==========================================================
-      - name: Configure kernel
-        run: |
-          set -eux
+          test ! -f .config
+          test ! -d include/config
 
-          cd kernel
-
-          make O=out sdm660_defconfig
-
-          # KernelSU
           ./scripts/config \
             --file out/.config \
             --enable CONFIG_KSU
 
-          # OverlayFS
           ./scripts/config \
             --file out/.config \
             --enable CONFIG_OVERLAY_FS
 
-          # Module signing
+          # Old 4.4 kernel / KSU compatibility
+          ./scripts/config \
+            --file out/.config \
+            --disable CONFIG_KPROBES
+
+          ./scripts/config \
+            --file out/.config \
+            --disable CONFIG_HAVE_KPROBES
+
+          ./scripts/config \
+            --file out/.config \
+            --disable CONFIG_KPROBE_EVENTS
+
           ./scripts/config \
             --file out/.config \
             --disable CONFIG_MODULE_SIG
@@ -302,94 +148,67 @@ jobs:
             --disable CONFIG_MODULE_SIG_FORCE
 
           ./scripts/config \
-            --disable CONFIG_SYSTEM_TRUSTED_KEYRING
-
-          ./scripts/config \
+            --file out/.config \
             --set-str CONFIG_SYSTEM_TRUSTED_KEYS ""
 
           ./scripts/config \
+            --file out/.config \
             --set-str CONFIG_SYSTEM_REVOCATION_KEYS ""
 
-          # ARM64 compatibility
+          ./scripts/config \
+            --disable CONFIG_SYSTEM_TRUSTED_KEYRING
+
           ./scripts/config \
             --disable CONFIG_VDSO32
 
           ./scripts/config \
             --disable CONFIG_COMPAT_VDSO
 
-          make O=out olddefconfig
+          make O=out ARCH=arm64 olddefconfig
 
-          echo ""
-          echo "KernelSU:"
-          grep '^CONFIG_KSU=' out/.config || true
+          echo "Source .config:"
+          ls -la .config 2>/dev/null || echo "OK: no source .config"
 
-          echo ""
-          echo "OverlayFS:"
-          grep '^CONFIG_OVERLAY_FS=' out/.config || true
+          echo "Source include/config:"
+          ls -ld include/config 2>/dev/null || echo "OK: no source include/config"
 
+          echo "Output config:"
+          test -f out/.config
 
-      # ==========================================================
-      # 13. DOWNLOAD CLANG
-      # ==========================================================
       - name: Download Android Clang
         run: |
           set -eux
 
-          git clone \
-            --depth=1 \
+          git clone --depth=1 \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang
 
-          echo "Clang versions:"
-
-          find clang \
+          CLANG_BIN=$(find "$GITHUB_WORKSPACE/clang" \
             -type f \
             -path '*/bin/clang' \
-            | sort
+            | sort \
+            | tail -1 \
+            | xargs dirname)
 
+          test -n "$CLANG_BIN"
 
-      # ==========================================================
-      # 14. BUILD KERNEL
-      # ==========================================================
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+
       - name: Build kernel
         run: |
           set -eux
 
           cd kernel
 
-          CLANG_BIN=$(
-            find "$GITHUB_WORKSPACE/clang" \
-              -type f \
-              -path '*/bin/clang' \
-              | sort \
-              | tail -1 \
-              | xargs dirname
-          )
-
-          test -n "${CLANG_BIN}"
-
-          export PATH="${CLANG_BIN}:$PATH"
-
           export ARCH=arm64
           export SUBARCH=arm64
 
-          echo "=========================================="
-          echo "COMPILER"
-          echo "=========================================="
-
           clang --version
 
-          echo ""
-          echo "=========================================="
-          echo "KERNEL VERSION"
-          echo "=========================================="
-
-          make kernelversion
-
-          echo ""
-          echo "=========================================="
-          echo "BUILD KERNEL"
-          echo "=========================================="
+          # Final safety check before build
+          test ! -f .config
+          test ! -d include/config
+          test -f out/.config
 
           make -j"$(nproc)" \
             O=out \
@@ -403,18 +222,7 @@ jobs:
 
           test -f out/arch/arm64/boot/Image.gz
 
-          echo ""
-          echo "=========================================="
-          echo "BUILD SUCCESS"
-          echo "=========================================="
-
-          ls -lh out/arch/arm64/boot/Image.gz
-
-
-      # ==========================================================
-      # 15. PREPARE NEW KERNEL
-      # ==========================================================
-      - name: Prepare kernel and preserve original DTB
+      - name: Replace kernel
         run: |
           set -eux
 
@@ -422,54 +230,24 @@ jobs:
 
           NEW_KERNEL="../kernel/out/arch/arm64/boot/Image.gz"
 
-          test -f "${NEW_KERNEL}"
+          test -f "$NEW_KERNEL"
 
           cp kernel kernel.original
 
           if [ -f kernel_dtb ]; then
-
-            echo "Using original kernel_dtb."
-
-            cp kernel_dtb ../original_kernel_dtb
-
-            cat \
-              "${NEW_KERNEL}" \
-              kernel_dtb \
-              > kernel.new
-
+            cat "$NEW_KERNEL" kernel_dtb > kernel.new
             mv kernel.new kernel
-
           else
-
-            echo "No separate kernel_dtb."
-
-            cp \
-              "${NEW_KERNEL}" \
-              kernel
-
+            cp "$NEW_KERNEL" kernel
           fi
-
-          echo ""
-          echo "New kernel size:"
 
           stat -c "%s bytes" kernel
 
-
-      # ==========================================================
-      # 16. REPACK BOOT
-      # ==========================================================
-      - name: Repack boot.img
+      - name: Repack boot
         run: |
           set -eux
 
-          test -f boot_work/boot.img
-          test -f boot_work/kernel
-
           cd boot_work
-
-          echo "=========================================="
-          echo "REPACK BOOT"
-          echo "=========================================="
 
           ../magiskboot repack \
             boot.img \
@@ -479,22 +257,13 @@ jobs:
 
           test -f boot_ksu.img
 
-          echo ""
-          echo "Generated boot_ksu.img:"
-
           ls -lh boot_ksu.img
 
-
-      # ==========================================================
-      # 17. VALIDATE BOOT
-      # ==========================================================
-      - name: Validate boot image
+      - name: Validate boot
         run: |
           set -eux
 
-          rm -rf validation
-
-          mkdir -p validation
+          mkdir validation
 
           cp boot_ksu.img validation/
 
@@ -504,60 +273,18 @@ jobs:
 
           test -f kernel
 
-          echo ""
-          echo "=========================================="
-          echo "VALIDATION SUCCESS"
-          echo "=========================================="
+          echo "BOOT IMAGE VALIDATION OK"
 
-          ls -lah
-
-
-      # ==========================================================
-      # 18. BUILD INFORMATION
-      # ==========================================================
-      - name: Generate build information
-        run: |
-          set -eux
-
-          {
-            echo "Device: ASUS Zenfone 5 ZE620KL / X00QD"
-            echo "ROM: crDroid 9.5 Android 13"
-            echo "Kernel source: ${KERNEL_REPO}"
-            echo "Kernel branch: ${KERNEL_BRANCH}"
-            echo "KernelSU: ${KSU_VERSION}"
-            echo ""
-            echo "Original boot:"
-            stat -c "%s bytes" original/boot.img
-            echo ""
-            echo "New boot:"
-            stat -c "%s bytes" boot_ksu.img
-            echo ""
-            echo "New kernel:"
-            stat -c "%s bytes" kernel/out/arch/arm64/boot/Image.gz
-          } > build-info.txt
-
-          cat build-info.txt
-
-
-      # ==========================================================
-      # 19. UPLOAD BOOT
-      # ==========================================================
-      - name: Upload boot_ksu.img
+      - name: Upload boot
         uses: actions/upload-artifact@v4
         with:
           name: ZE620KL-crDroid-9.5-KernelSU
           path: boot_ksu.img
 
-
-      # ==========================================================
-      # 20. UPLOAD DEBUG
-      # ==========================================================
-      - name: Upload debug files
+      - name: Upload debug
         uses: actions/upload-artifact@v4
         with:
           name: ZE620KL-debug
           path: |
-            build-info.txt
-            original/boot.img
-            original_kernel_dtb
-            kernel/.config
+            kernel/out/.config
+            kernel/out/arch/arm64/boot/Image.gz
