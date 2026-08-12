@@ -38,16 +38,16 @@ jobs:
             exit 1
           fi
 
-          wget https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-ikconfig -O extract-ikconfig
-          chmod +x extract-ikconfig
+          # Dùng trực tiếp extract-ikconfig từ repo kernel vừa clone
+          chmod +x kernel/scripts/extract-ikconfig
 
-          ./extract-ikconfig boot.img > kernel_config_goc || true
+          kernel/scripts/extract-ikconfig boot.img > kernel_config_goc || true
 
           if [ -s kernel_config_goc ]; then
             echo "Đã trích xuất thành công ikconfig từ boot.img gốc!"
             cp kernel_config_goc kernel/arch/arm64/configs/custom_x00qd_defconfig
           else
-            echo "boot.img gốc không chứa ikconfig, dùng sdm660_defconfig."
+            echo "boot.img gốc không chứa ikconfig, dùng sdm660_defconfig chuẩn."
             cp kernel/arch/arm64/configs/sdm660_defconfig kernel/arch/arm64/configs/custom_x00qd_defconfig
           fi
 
