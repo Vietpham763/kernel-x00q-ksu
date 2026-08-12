@@ -15,7 +15,7 @@ jobs:
       # ============================================================
       # CHECKOUT
       # ============================================================
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # ============================================================
@@ -75,6 +75,7 @@ jobs:
           )"
 
           test -n "$CLANG_BIN"
+
           test -x "$CLANG_BIN/clang"
           test -x "$CLANG_BIN/ld.lld"
           test -x "$CLANG_BIN/llvm-ar"
@@ -88,7 +89,7 @@ jobs:
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
 
           echo "=========================================="
-          echo "ANDROID CLANG"
+          echo "CLANG"
           echo "=========================================="
 
           "$CLANG_BIN/clang" --version
@@ -97,7 +98,7 @@ jobs:
       # ============================================================
       # KERNEL SOURCE
       # ============================================================
-      - name: Clone X00QD kernel
+      - name: Clone kernel source
         shell: bash
         run: |
           set -eux
@@ -129,9 +130,9 @@ jobs:
             sort
 
       # ============================================================
-      # CHECK CONFIG
+      # SELECT DEFCONFIG
       # ============================================================
-      - name: Select X00QD configuration
+      - name: Select defconfig
         shell: bash
         run: |
           set -eux
@@ -139,12 +140,8 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel"
 
           echo "=========================================="
-          echo "CONFIGURATION"
+          echo "SELECT DEFCONFIG"
           echo "=========================================="
-
-          # X00QD/ZenFone 5z sử dụng nền SDM660.
-          # Source Lineage hiện tại không có custom_x00qd_defconfig.
-          # Dùng defconfig có thật trong source.
 
           if [ -f arch/arm64/configs/X00TD_defconfig ]; then
             DEFCONFIG=X00TD_defconfig
@@ -159,16 +156,11 @@ jobs:
             DEFCONFIG=sdm660_defconfig
 
           else
-            echo "ERROR: Không tìm thấy defconfig phù hợp!"
-            find arch/arm64/configs \
-              -maxdepth 1 \
-              -type f \
-              -name '*defconfig' \
-              -print
+            echo "ERROR: No compatible defconfig found."
             exit 1
           fi
 
-          echo "Using: $DEFCONFIG"
+          echo "Selected: $DEFCONFIG"
 
           echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
 
@@ -197,10 +189,7 @@ jobs:
           echo "KERNELSU"
           echo "=========================================="
 
-          find drivers -maxdepth 2 \
-            -type d \
-            -name '*kernelsu*' \
-            -print || true
+          git -C KernelSU rev-parse HEAD
 
       # ============================================================
       # CONFIGURE
@@ -230,14 +219,6 @@ jobs:
           test -f out/.config
 
           echo "=========================================="
-          echo "KERNELSU CONFIG"
-          echo "=========================================="
-
-          grep -E \
-            'CONFIG_KSU|CONFIG_OVERLAY_FS|CONFIG_KPROBES' \
-            out/.config || true
-
-          echo "=========================================="
           echo "OLDDEFCONFIG"
           echo "=========================================="
 
@@ -249,7 +230,7 @@ jobs:
           test -f out/.config
 
       # ============================================================
-      # BUILD
+      # BUILD KERNEL
       # ============================================================
       - name: Build kernel
         shell: bash
@@ -263,6 +244,9 @@ jobs:
 
           export PATH="$CLANG_BIN:$PATH"
 
+          # --------------------------------------------------------
+          # LLVM
+          # --------------------------------------------------------
           export CC=clang
           export LD=ld.lld
           export AR=llvm-ar
@@ -272,9 +256,28 @@ jobs:
           export OBJDUMP=llvm-objdump
           export READELF=llvm-readelf
 
+          # --------------------------------------------------------
+          # CROSS COMPILERS
+          # --------------------------------------------------------
+          #
+          # ARM64:
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          # ARM32:
+          # Kernel 4.x SDM660 source requires this variable.
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
           echo "=========================================="
           echo "TOOLCHAIN"
           echo "=========================================="
+
+          echo "CLANG_BIN=$CLANG_BIN"
+          echo "CROSS_COMPILE=$CROSS_COMPILE"
+          echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
+
+          echo "------------------------------------------"
+          echo "Clang"
+          echo "------------------------------------------"
 
           clang --version
           ld.lld --version
@@ -282,14 +285,29 @@ jobs:
           llvm-objdump --version
           llvm-readelf --version
 
+          echo "------------------------------------------"
+          echo "ARM64 GCC"
+          echo "------------------------------------------"
+
+          aarch64-linux-gnu-gcc --version
+
+          echo "------------------------------------------"
+          echo "ARM32 GCC"
+          echo "------------------------------------------"
+
+          arm-linux-gnueabi-gcc --version
+
           echo "=========================================="
           echo "BUILD KERNEL"
           echo "=========================================="
+
+          test -f out/.config
 
           make \
             -j"$(nproc)" \
             O=out \
             ARCH=arm64 \
+            SUBARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
@@ -300,6 +318,8 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             READELF=llvm-readelf \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="-Wno-error" \
             Image.gz
 
@@ -313,172 +333,9 @@ jobs:
             out/arch/arm64/boot/Image.gz
 
       # ============================================================
-      # MAGISKBOOT
+      # PREPARE ARTIFACTS
       # ============================================================
-      - name: Prepare MagiskBoot
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE"
-
-          wget -q \
-            https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk \
-            -O Magisk.apk
-
-          rm -rf magisk_extract
-          mkdir -p magisk_extract
-
-          unzip -o \
-            Magisk.apk \
-            'lib/x86_64/libmagiskboot.so' \
-            -d magisk_extract
-
-          test -f \
-            magisk_extract/lib/x86_64/libmagiskboot.so
-
-          cp \
-            magisk_extract/lib/x86_64/libmagiskboot.so \
-            magiskboot
-
-          chmod +x magiskboot
-
-          echo "=========================================="
-          echo "MAGISKBOOT"
-          echo "=========================================="
-
-          ./magiskboot --help
-
-      # ============================================================
-      # PREPARE BOOT
-      # ============================================================
-      - name: Prepare boot image
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE"
-
-          test -f boot.zip
-
-          rm -rf boot_work
-          mkdir -p boot_work
-
-          unzip -o boot.zip -d boot_work
-
-          BOOT_IMG="$(
-            find boot_work \
-              -type f \
-              -name 'boot.img' |
-            head -1
-          )"
-
-          if [ -z "$BOOT_IMG" ]; then
-            echo "ERROR: Không tìm thấy boot.img trong boot.zip"
-            find boot_work -type f -maxdepth 5 -print
-            exit 1
-          fi
-
-          cp \
-            "$BOOT_IMG" \
-            boot_work/original-boot.img
-
-          ls -lh \
-            boot_work/original-boot.img
-
-      # ============================================================
-      # UNPACK
-      # ============================================================
-      - name: Unpack boot image
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/boot_work"
-
-          "$GITHUB_WORKSPACE/magiskboot" \
-            unpack \
-            -h \
-            original-boot.img
-
-          echo "=========================================="
-          echo "BOOT COMPONENTS"
-          echo "=========================================="
-
-          ls -lah
-
-          test -f kernel
-
-      # ============================================================
-      # REPLACE KERNEL
-      # ============================================================
-      - name: Replace boot kernel
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/boot_work"
-
-          test -f kernel
-
-          test -f \
-            "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz"
-
-          cp kernel kernel.stock
-
-          cp \
-            "$GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image.gz" \
-            kernel
-
-          echo "=========================================="
-          echo "KERNEL REPLACED"
-          echo "=========================================="
-
-          ls -lh kernel kernel.stock
-
-      # ============================================================
-      # REPACK
-      # ============================================================
-      - name: Repack boot image
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/boot_work"
-
-          "$GITHUB_WORKSPACE/magiskboot" \
-            repack \
-            original-boot.img \
-            new-boot.img
-
-          test -f new-boot.img
-
-          echo "=========================================="
-          echo "REPACK RESULT"
-          echo "=========================================="
-
-          ls -lh \
-            original-boot.img \
-            new-boot.img
-
-      # ============================================================
-      # VERIFY
-      # ============================================================
-      - name: Verify boot image
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/boot_work"
-
-          "$GITHUB_WORKSPACE/magiskboot" \
-            verify \
-            new-boot.img || true
-
-      # ============================================================
-      # ARTIFACTS
-      # ============================================================
-      - name: Prepare artifacts
+      - name: Prepare kernel artifact
         shell: bash
         run: |
           set -eux
@@ -492,22 +349,17 @@ jobs:
             kernel/out/arch/arm64/boot/Image.gz \
             artifacts/Image.gz
 
-          cp \
-            boot_work/new-boot.img \
-            artifacts/boot_ksu.img
-
           echo "=========================================="
-          echo "ARTIFACTS"
+          echo "ARTIFACT"
           echo "=========================================="
 
-          ls -lh artifacts
+          ls -lh artifacts/
 
       # ============================================================
       # UPLOAD
       # ============================================================
-      - name: Upload artifacts
+      - name: Upload kernel
         uses: actions/upload-artifact@v4
-
         with:
           name: ZE620KL-crDroid-9.5-KernelSU
           path: artifacts/
