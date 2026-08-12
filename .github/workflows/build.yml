@@ -3,9 +3,6 @@ name: Build ZE620KL crDroid 9.5 KernelSU
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -15,13 +12,14 @@ jobs:
       # ============================================================
       # CHECKOUT
       # ============================================================
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
+
       # ============================================================
-      # DEPENDENCIES
+      # BUILD DEPENDENCIES
       # ============================================================
-      - name: Install dependencies
+      - name: Install build dependencies
         shell: bash
         run: |
           set -eux
@@ -29,61 +27,255 @@ jobs:
           sudo apt-get update
 
           sudo apt-get install -y \
+            build-essential \
             bc \
             bison \
-            build-essential \
-            cpio \
             flex \
-            git \
-            libelf-dev \
-            libncurses5-dev \
             libssl-dev \
-            lz4 \
-            python3 \
-            rsync \
-            unzip \
+            libncurses5-dev \
+            git \
             wget \
+            unzip \
             zip \
+            cpio \
+            rsync \
             device-tree-compiler \
             gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi
+            g++-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            g++-arm-linux-gnueabi
+
 
       # ============================================================
-      # ANDROID CLANG
+      # MAGISKBOOT
       # ============================================================
-      - name: Download Android Clang
+      - name: Install MagiskBoot
         shell: bash
         run: |
           set -eux
 
-          cd "$GITHUB_WORKSPACE"
+          wget -O Magisk.apk \
+            https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
 
-          rm -rf clang
+          unzip -o Magisk.apk \
+            "lib/x86_64/libmagiskboot.so" \
+            -d magisk_extract
+
+          cp magisk_extract/lib/x86_64/libmagiskboot.so magiskboot
+          chmod +x magiskboot
+
+          sudo cp magiskboot /usr/local/bin/magiskboot
+
+          magiskboot --help
+
+
+      # ============================================================
+      # KERNEL SOURCE
+      # ============================================================
+      - name: Clone ASUS SDM660 Kernel
+        shell: bash
+        run: |
+          set -eux
+
+          git clone \
+            --depth=1 \
+            -b lineage-18.1 \
+            https://github.com/LineageOS/android_kernel_asus_sdm660 \
+            kernel
+
+
+      # ============================================================
+      # CHECK SOURCE
+      # ============================================================
+      - name: Check kernel source
+        shell: bash
+        run: |
+          set -eux
+
+          cd kernel
+
+          echo "=========================================="
+          echo "KERNEL SOURCE"
+          echo "=========================================="
+
+          test -d arch/arm64
+          test -f Makefile
+
+          echo "Available defconfigs:"
+          find arch/arm64/configs -maxdepth 1 -type f \
+            -printf '%f\n' | sort | head -100
+
+
+      # ============================================================
+      # GET ORIGINAL BOOT CONFIG
+      # ============================================================
+      - name: Extract original boot config
+        shell: bash
+        run: |
+          set -eux
+
+          if [ -f boot.zip ]; then
+            unzip -o boot.zip
+          fi
+
+          if [ ! -f boot.img ]; then
+            echo "ERROR: boot.img not found"
+            exit 1
+          fi
+
+          chmod +x kernel/scripts/extract-ikconfig
+
+          if kernel/scripts/extract-ikconfig boot.img \
+              > kernel_config_goc 2>/dev/null; then
+
+            if [ -s kernel_config_goc ]; then
+              echo "Original kernel config found."
+
+              cp \
+                kernel_config_goc \
+                kernel/arch/arm64/configs/custom_x00qd_defconfig
+            else
+              echo "No embedded config."
+              exit 1
+            fi
+
+          else
+            echo "Unable to extract kernel config."
+            exit 1
+          fi
+
+
+      # ============================================================
+      # KERNELSU
+      # ============================================================
+      - name: Integrate KernelSU Next
+        shell: bash
+        run: |
+          set -eux
+
+          cd kernel
+
+          git clone \
+            --depth=1 \
+            https://github.com/KernelSU-Next/KernelSU-Next \
+            KSU
+
+          rm -rf drivers/kernelsu
+
+          cp -r KSU/kernel drivers/kernelsu
+
+          rm -rf KSU
+
+          grep -q 'obj-y += kernelsu/' drivers/Makefile || \
+            echo 'obj-y += kernelsu/' >> drivers/Makefile
+
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || \
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+
+
+      # ============================================================
+      # KERNEL CONFIG
+      # ============================================================
+      - name: Prepare kernel config
+        shell: bash
+        run: |
+          set -eux
+
+          cd kernel
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          rm -rf out
+          mkdir -p out
+
+          echo "=========================================="
+          echo "CREATE CONFIG"
+          echo "=========================================="
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            custom_x00qd_defconfig
+
+          echo "=========================================="
+          echo "FORCE DISABLE VDSO32"
+          echo "=========================================="
+
+          # VDSO32 là nguyên nhân của lỗi:
+          # /usr/bin/as: unrecognized option '-EL'
+
+          ./scripts/config \
+            --file out/.config \
+            --disable VDSO32
+
+          ./scripts/config \
+            --file out/.config \
+            --disable COMPAT_VDSO
+
+          ./scripts/config \
+            --disable COMPAT
+
+          # KernelSU
+          ./scripts/config \
+            --file out/.config \
+            --enable KSU
+
+          ./scripts/config \
+            --file out/.config \
+            --enable OVERLAY_FS
+
+          # Không ký module bằng key của hệ thống build
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_TRUSTED_KEYS ""
+
+          ./scripts/config \
+            --file out/.config \
+            --set-str SYSTEM_REVOCATION_KEYS ""
+
+          ./scripts/config \
+            --file out/.config \
+            --disable MODULE_SIG
+
+          # Đồng bộ lại config
+          make \
+            O=out \
+            ARCH=arm64 \
+            olddefconfig
+
+          echo "=========================================="
+          echo "CHECK FINAL CONFIG"
+          echo "=========================================="
+
+          grep -E \
+            'CONFIG_(VDSO32|COMPAT_VDSO|COMPAT|KSU|OVERLAY_FS)' \
+            out/.config || true
+
+
+      # ============================================================
+      # LLVM TOOLCHAIN
+      # ============================================================
+      - name: Download Android LLVM Clang
+        shell: bash
+        run: |
+          set -eux
 
           git clone \
             --depth=1 \
             https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
             clang
 
-          CLANG_BIN="$(
+          CLANG_BIN=$(
             find "$GITHUB_WORKSPACE/clang" \
               -type f \
               -path '*/bin/clang' \
               -printf '%h\n' |
             sort |
             tail -1
-          )"
+          )
 
           test -n "$CLANG_BIN"
-
-          test -x "$CLANG_BIN/clang"
-          test -x "$CLANG_BIN/ld.lld"
-          test -x "$CLANG_BIN/llvm-ar"
-          test -x "$CLANG_BIN/llvm-nm"
-          test -x "$CLANG_BIN/llvm-objcopy"
-          test -x "$CLANG_BIN/llvm-objdump"
-          test -x "$CLANG_BIN/llvm-readelf"
-          test -x "$CLANG_BIN/llvm-strip"
 
           echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
           echo "$CLANG_BIN" >> "$GITHUB_PATH"
@@ -93,275 +285,172 @@ jobs:
           echo "=========================================="
 
           "$CLANG_BIN/clang" --version
-          "$CLANG_BIN/ld.lld" --version
+
 
       # ============================================================
-      # KERNEL SOURCE
-      # ============================================================
-      - name: Clone kernel source
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE"
-
-          rm -rf kernel
-
-          git clone \
-            --depth=1 \
-            --branch lineage-18.1 \
-            https://github.com/LineageOS/android_kernel_asus_sdm660 \
-            kernel
-
-          cd kernel
-
-          echo "=========================================="
-          echo "KERNEL SOURCE"
-          echo "=========================================="
-
-          git rev-parse HEAD
-
-          echo "Available defconfigs:"
-          find arch/arm64/configs \
-            -maxdepth 1 \
-            -type f \
-            -name '*defconfig' \
-            -printf '%f\n' |
-            sort
-
-      # ============================================================
-      # SELECT DEFCONFIG
-      # ============================================================
-      - name: Select defconfig
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          echo "=========================================="
-          echo "SELECT DEFCONFIG"
-          echo "=========================================="
-
-          if [ -f arch/arm64/configs/X00TD_defconfig ]; then
-            DEFCONFIG=X00TD_defconfig
-
-          elif [ -f arch/arm64/configs/X01BD_defconfig ]; then
-            DEFCONFIG=X01BD_defconfig
-
-          elif [ -f arch/arm64/configs/sdm660-perf_defconfig ]; then
-            DEFCONFIG=sdm660-perf_defconfig
-
-          elif [ -f arch/arm64/configs/sdm660_defconfig ]; then
-            DEFCONFIG=sdm660_defconfig
-
-          else
-            echo "ERROR: No compatible defconfig found."
-            exit 1
-          fi
-
-          echo "Selected: $DEFCONFIG"
-
-          echo "DEFCONFIG=$DEFCONFIG" >> "$GITHUB_ENV"
-
-      # ============================================================
-      # KERNELSU
-      # ============================================================
-      - name: Integrate KernelSU
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          rm -rf KernelSU
-
-          git clone \
-            --depth=1 \
-            https://github.com/tiann/KernelSU.git \
-            KernelSU
-
-          test -f KernelSU/kernel/setup.sh
-
-          bash KernelSU/kernel/setup.sh
-
-          echo "=========================================="
-          echo "KERNELSU"
-          echo "=========================================="
-
-          git -C KernelSU rev-parse HEAD
-
-      # ============================================================
-      # CONFIGURE
-      # ============================================================
-      - name: Configure kernel
-        shell: bash
-        run: |
-          set -eux
-
-          cd "$GITHUB_WORKSPACE/kernel"
-
-          export ARCH=arm64
-          export SUBARCH=arm64
-
-          rm -rf out
-          mkdir -p out
-
-          echo "=========================================="
-          echo "DEFCONFIG"
-          echo "=========================================="
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            "$DEFCONFIG"
-
-          test -f out/.config
-
-          echo "=========================================="
-          echo "OLDDEFCONFIG"
-          echo "=========================================="
-
-          make \
-            O=out \
-            ARCH=arm64 \
-            olddefconfig
-
-          test -f out/.config
-
-      # ============================================================
-      # BUILD KERNEL
+      # BUILD
       # ============================================================
       - name: Build kernel
         shell: bash
         run: |
           set -eux
 
-          cd "$GITHUB_WORKSPACE/kernel"
+          cd kernel
 
           export ARCH=arm64
           export SUBARCH=arm64
 
           export PATH="$CLANG_BIN:$PATH"
 
-          # --------------------------------------------------------
-          # LLVM
-          # --------------------------------------------------------
           export CC=clang
+
+          export LLVM=1
+          export LLVM_IAS=1
+
           export LD=ld.lld
           export AR=llvm-ar
           export NM=llvm-nm
-          export STRIP=llvm-strip
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
           export READELF=llvm-readelf
 
-          # --------------------------------------------------------
-          # CROSS COMPILERS
-          # --------------------------------------------------------
-          #
-          # ARM64:
           export CROSS_COMPILE=aarch64-linux-gnu-
-
-          # ARM32:
-          # Kernel 4.x SDM660 source requires this variable.
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
           echo "=========================================="
-          echo "TOOLCHAIN"
+          echo "FINAL CONFIG CHECK"
           echo "=========================================="
 
-          echo "CLANG_BIN=$CLANG_BIN"
-          echo "CROSS_COMPILE=$CROSS_COMPILE"
-          echo "CROSS_COMPILE_ARM32=$CROSS_COMPILE_ARM32"
-
-          echo "------------------------------------------"
-          echo "Clang"
-          echo "------------------------------------------"
-
-          clang --version
-          ld.lld --version
-          llvm-ar --version
-          llvm-objdump --version
-          llvm-readelf --version
-
-          echo "------------------------------------------"
-          echo "ARM64 GCC"
-          echo "------------------------------------------"
-
-          aarch64-linux-gnu-gcc --version
-
-          echo "------------------------------------------"
-          echo "ARM32 GCC"
-          echo "------------------------------------------"
-
-          arm-linux-gnueabi-gcc --version
+          grep -E \
+            'CONFIG_(VDSO32|COMPAT_VDSO|COMPAT|KSU|OVERLAY_FS)' \
+            out/.config || true
 
           echo "=========================================="
           echo "BUILD KERNEL"
           echo "=========================================="
 
-          test -f out/.config
-
           make \
-            -j"$(nproc)" \
+            -j4 \
             O=out \
             ARCH=arm64 \
-            SUBARCH=arm64 \
             LLVM=1 \
             LLVM_IAS=1 \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
             NM=llvm-nm \
-            STRIP=llvm-strip \
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
             READELF=llvm-readelf \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             KCFLAGS="-Wno-error" \
             Image.gz
 
-          echo "=========================================="
-          echo "BUILD RESULT"
-          echo "=========================================="
-
-          test -f out/arch/arm64/boot/Image.gz
-
-          ls -lh \
-            out/arch/arm64/boot/Image.gz
 
       # ============================================================
-      # PREPARE ARTIFACTS
+      # VERIFY BUILD OUTPUT
       # ============================================================
-      - name: Prepare kernel artifact
+      - name: Verify kernel
         shell: bash
         run: |
           set -eux
 
-          cd "$GITHUB_WORKSPACE"
+          cd kernel
 
-          rm -rf artifacts
-          mkdir -p artifacts
+          test -f out/arch/arm64/boot/Image.gz
 
-          cp \
-            kernel/out/arch/arm64/boot/Image.gz \
-            artifacts/Image.gz
+          ls -lh out/arch/arm64/boot/Image.gz
 
-          echo "=========================================="
-          echo "ARTIFACT"
-          echo "=========================================="
-
-          ls -lh artifacts/
 
       # ============================================================
-      # UPLOAD
+      # REPACK BOOT
       # ============================================================
-      - name: Upload kernel
+      - name: Repack boot.img
+        shell: bash
+        run: |
+          set -eux
+
+          test -f boot.img
+
+          rm -rf workdir
+          mkdir -p workdir
+
+          cp boot.img workdir/
+
+          cd workdir
+
+          magiskboot unpack boot.img
+
+          KOUT="../kernel/out/arch/arm64/boot"
+
+          test -f "$KOUT/Image.gz"
+
+          cp "$KOUT/Image.gz" kernel.gz
+
+          # Giữ DTB/DTBO từ boot gốc nếu có
+          if [ -f kernel_dtb ]; then
+            cat kernel.gz kernel_dtb > kernel
+          else
+            cp kernel.gz kernel
+          fi
+
+          echo "=========================================="
+          echo "REPACK"
+          echo "=========================================="
+
+          magiskboot repack \
+            boot.img \
+            new-boot.img
+
+          test -f new-boot.img
+
+          cp new-boot.img ../boot_ksu.img
+
+          echo "Output:"
+          ls -lh ../boot_ksu.img
+
+
+      # ============================================================
+      # CHECK SIZE
+      # ============================================================
+      - name: Check boot image size
+        shell: bash
+        run: |
+          set -eux
+
+          ORIGINAL=$(stat -c%s boot.img)
+          NEW=$(stat -c%s boot_ksu.img)
+
+          echo "Original: $ORIGINAL"
+          echo "New:      $NEW"
+
+          if [ "$NEW" -gt "$ORIGINAL" ]; then
+            echo "ERROR: new boot.img is larger than original."
+            exit 1
+          fi
+
+          PAD=$((ORIGINAL - NEW))
+
+          if [ "$PAD" -gt 0 ]; then
+            dd \
+              if=/dev/zero \
+              bs=1 \
+              count="$PAD" \
+              >> boot_ksu.img
+          fi
+
+          stat -c%s boot_ksu.img
+
+
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
+      - name: Upload boot_ksu.img
         uses: actions/upload-artifact@v4
         with:
-          name: ZE620KL-crDroid-9.5-KernelSU
-          path: artifacts/
+          name: boot_ksu_X00QD_KernelSU
+          path: boot_ksu.img
           if-no-files-found: error
-          retention-days: 14
